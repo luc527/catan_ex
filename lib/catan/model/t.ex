@@ -30,10 +30,14 @@ defmodule Catan.Model.T do
 
   @type piece() :: :settlement | :city | :road
 
+  @type turn_stage() :: :moving_robber | :trading | :building
+
   @type game_state() ::
-    {:foundation, round :: 1|2, player :: T.color(), queue :: [T.color()]}
-    | {:ongoing, current_player :: T.color()}
-    | {:won_by, winner :: T.color()}
+    {:foundation, round :: 1|2, player_queue :: [color()]}
+    | {:ongoing, stage :: turn_stage(), player_queue :: color()}
+    | {:won_by, winner :: color()}
+
+  @type buyable() :: :development_card | :road | :settlement | :city
 
   @spec tiles() :: T.tile()
   def tiles(), do: 1..19
@@ -62,13 +66,33 @@ defmodule Catan.Model.T do
   def building_weight(:settlement), do: 1
   def building_weight(:city), do: 2
 
-  @spec terrain_resource(T.terrain()) :: T.resource()
-  def terrain_resource(:hills), do: :brick
-  def terrain_resource(:forest), do: :lumber
+  @spec terrain_resource(T.terrain()) :: T.resource() | nil
+  def terrain_resource(:hills),     do: :brick
+  def terrain_resource(:forest),    do: :lumber
   def terrain_resource(:mountains), do: :ore
-  def terrain_resource(:fields), do: :grain
-  def terrain_resource(:pasture), do: :wool
-  def terrain_resource(:desert), do: :nil
+  def terrain_resource(:fields),    do: :grain
+  def terrain_resource(:pasture),   do: :wool
+  def terrain_resource(:desert),    do: :nil
 
+  @spec cost(T.buyable()) :: [{T.resource(), integer()}]
+  def cost(:development_card), do: [
+    ore:   -1,
+    grain: -1,
+    wool:  -1
+  ]
+  def cost(:road), do: [
+    lumber: -1,
+    brick:  -1,
+  ]
+  def cost(:settlement), do: [
+    lumber: -1,
+    brick:  -1,
+    grain:  -1,
+    wool:   -1
+  ]
+  def cost(:city), do: [
+    grain: -2,
+    ore:   -3
+  ]
 
 end
