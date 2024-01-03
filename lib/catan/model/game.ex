@@ -1,3 +1,13 @@
+# TODO: dice roll 7
+# every player with more than 7 cards must choose floor(num_cards/2) of them and give them away
+# {:ongoing, ...}
+# -> dice roll 7
+# {:ongoing, {:choosing_stolen_cards, remaining_players}, queue}
+# -> players choose cards to remove (in any order)
+# {:ongoing, :moving_robber, queue}
+# -> places robber, steals player
+# {:ongoing, :trading, queue}
+
 defmodule Catan.Model.Game do
   require Catan.Model.T
   alias Catan.Model.Graphs
@@ -8,24 +18,28 @@ defmodule Catan.Model.Game do
 
   defstruct [
     :board,
+    :player_order,
+
     :buildings,
     :roads,
-    :player_order,
 
     :players,
     :state,
     :dice_roll,
+    :robber_tile,
   ]
 
   @type t() :: %__MODULE__ {
-    board: %Board{},
-    buildings: %{T.corner() => T.building()},
-    roads: %{T.path() => T.color()},
+    board:        Board.t(),
     player_order: [T.color()],
 
-    players: %{T.color() => %Player{}},
-    state: T.game_state(),
-    dice_roll: T.dice_roll()|nil,
+    buildings: %{T.corner() => T.building()},
+    roads:     %{T.path() => T.color()},
+
+    players:     %{T.color() => %Player{}},
+    state:       T.game_state(),
+    dice_roll:   T.dice_roll()|nil,
+    robber_tile: T.tile()
   }
 
   defp as_result(game) do
@@ -73,6 +87,9 @@ defmodule Catan.Model.Game do
       Enum.any?(player_order, &(&1 not in T.colors())) ->
         {:error, :invalid_players}
       true ->
+        [{robber_tile, _}] =
+          board.terrains
+          |> Enum.filter(fn {_tile, terrain} -> terrain == :desert end)
         {:ok, %Game{
           state: {:foundation, 1, player_order},
           board: board,
@@ -81,6 +98,7 @@ defmodule Catan.Model.Game do
           buildings: %{},
           roads: %{},
           dice_roll: nil,
+          robber_tile: robber_tile,
         }}
     end
   end
@@ -245,6 +263,7 @@ defmodule Catan.Model.Game do
   defp affected_tiles(game, roll) do
     game.board.tokens
     |> Stream.filter(fn {_tile, token} -> token == roll end)
+    |> Stream.reject(fn {tile, _token} -> tile == game.robber_tile end)
     |> Stream.map(fn {tile, _token} -> tile end)
   end
 
@@ -451,7 +470,53 @@ defmodule Catan.Model.Game do
     %{game | state: {:ongoing, :building, queue}}
   end
 
-  # TODO deal with :moving_robber state
+  @spec move_robber(Game.t(), T.tile(), T.color() | nil) :: T.result(Game.t())
+  def move_robber(
+    %Game{state: {:ongoing, :moving_robber, [player|_] = queue}} = game,
+    tile, stolen_player
+  ) do
+    adjacent_building_colors =
+      Graphs.tile_corners[tile]
+      |> Stream.flat_map(fn corner ->
+        case game.buildings[corner] do
+          nil -> []
+          {_kind, color} -> [color]
+        end
+      end)
+
+    cond do
+      tile == game.robber_tile ->
+        {:error, :robber_unmoved}
+
+      player == stolen_player ->
+        {:error, :stealing_yourself}
+
+      stolen_player && stolen_player not in adjacent_building_colors ->
+        {:error, :stolen_player_not_adjacent}
+
+      true ->
+        game = %{game |
+          robber_tile: tile,
+          state: {:ongoing, :trading, queue},
+        }
+        resource_cards =
+          if stolen_player do
+            game.players[stolen_player].resources
+            |> Enum.flat_map(fn {resource, amount} -> List.duplicate(resource, amount) end)
+          else
+            []
+          end
+        if resource_cards == [] do
+          {:ok, game}
+        else
+          # This is a little inefficient
+          stolen_resource = Enum.at(resource_cards, :rand.uniform(length(resource_cards)) - 1)
+          with {:ok, game} <- transfer_resources(game, stolen_player, player, [{stolen_resource, 1}]) do
+            {:ok, game}
+          end
+        end
+    end
+  end
 
   @spec build_road(Game.t(), T.path()) :: T.result(Game.t())
   def build_road(
@@ -489,10 +554,13 @@ defmodule Catan.Model.Game do
     case game.buildings[corner] do
       nil ->
         {:error, :no_settlement}
+
       {:city, _} ->
         {:error, :occupied}
+
       {_, building_color} when building_color != player ->
         {:error, :settlement_not_yours}
+
       {:settlement, ^player} ->
         with {:ok, game} <- update_player_resources(game, player, T.cost(:city)),
              {:ok, game} <- update_player_piece(game, player, :city, -1)
