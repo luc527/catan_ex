@@ -9,8 +9,8 @@ defmodule Catan.Model.Board do
   ]
 
   @type t() :: %__MODULE__{
-    terrains: T.board_terrains(),
-    tokens: T.board_tokens(),
+    terrains: %{T.tile() => T.terrain()},
+    tokens:   %{T.tile() => T.token()},
   }
 
   @spec available_terrains() :: [T.terrain()]
@@ -25,8 +25,8 @@ defmodule Catan.Model.Board do
     ])
   end
 
-  @spec beginner_terrains() :: T.board_terrains()
-  def beginner_terrains() do
+  @spec beginner_board_terrains() :: %{T.tile() => T.terrain()}
+  defp beginner_board_terrains() do
     %{
       1 => :mountains,
       2 => :pasture,
@@ -50,8 +50,8 @@ defmodule Catan.Model.Board do
     }
   end
 
-  @spec beginner_tokens() :: T.board_tokens()
-  def beginner_tokens() do
+  @spec beginner_board_tokens() :: %{T.tile() => T.token()}
+  defp beginner_board_tokens() do
     %{
       1 => 10,
       2 => 2,
@@ -75,14 +75,13 @@ defmodule Catan.Model.Board do
     }
   end
 
-  @spec random_terrains() :: T.board_terrains()
+  @spec random_terrains() :: %{T.tile() => T.terrain()}
   def random_terrains() do
-    T.tiles()
-    |> Stream.zip(Enum.shuffle(available_terrains()))
-    |> Enum.into(%{})
+    Stream.zip(T.tiles(), Enum.shuffle(available_terrains()))
+    |> Map.new()
   end
 
-  @spec default_tokens_for(T.board_terrains()) :: T.board_tokens()
+  @spec default_tokens_for(%{T.tile() => T.terrain()}) :: %{T.tile() => T.token()}
   def default_tokens_for(terrains) do
     tile_spiral    = [1, 4, 8, 13, 17, 18, 19, 16, 12, 7, 3, 2, 5, 9, 14, 15, 11, 6, 10]
     default_tokens = [5, 2, 6, 3, 8, 10, 9, 12, 11, 4, 8, 10, 9, 4, 5, 6, 3, 11]
@@ -90,21 +89,21 @@ defmodule Catan.Model.Board do
     tile_spiral
     |> Stream.reject(fn tile -> terrains[tile] == :desert end)
     |> Stream.zip(default_tokens)
-    |> Enum.into(%{})
+    |> Map.new()
   end
 
-  @spec beginner() :: %Board{}
-  def beginner() do
+  @spec beginner_board() :: %Board{}
+  def beginner_board() do
     %Board{
-      terrains: beginner_terrains(),
-      tokens: beginner_tokens(),
+      terrains: beginner_board_terrains(),
+      tokens: beginner_board_tokens(),
     }
   end
 
-  @spec random_but_default_tokens() :: %Board{}
-  def random_but_default_tokens() do
+  @spec random_board_but_default_tokens() :: %Board{}
+  def random_board_but_default_tokens() do
     terrains = random_terrains()
-    tokens   = default_tokens_for(terrains)
+    tokens = default_tokens_for(terrains)
     %Board{
       terrains: terrains,
       tokens: tokens,

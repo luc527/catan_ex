@@ -156,28 +156,4 @@ defmodule Catan.Model.Graphs do
       54 => [19],
     }
   end
-
-  def corner_to_dot(graph) do
-    edges_s =
-      for {from, edges} <- graph, {label, to} <- edges do
-        ~s(  #{from} -> #{to} [label = "#{label}"];)
-      end
-    """
-    digraph {
-      #{edges_s |> Enum.join("\n")}
-    }
-    """
-  end
-
-  def tile_to_dot(graph) do
-    edges_s = for {from, edges} <- graph, to <- edges do
-      ~s("f#{from}" -> "t#{to}";)
-    end
-    """
-    digraph {
-      #{edges_s |> Enum.join("\n")}
-    }
-    """
-  end
-
 end

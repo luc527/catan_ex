@@ -3,6 +3,8 @@ defmodule Catan.Model.T do
   Paths, corners and tiles are numbered in reading order (top-to-bottom, left-to-right).
   """
 
+  @type result(type) :: {:ok, result :: type} | {:error, reason :: any()}
+
   @type path()   :: 1..72
   @type corner() :: 1..54
   @type tile()   :: 1..19
@@ -16,13 +18,7 @@ defmodule Catan.Model.T do
   @type color() :: :red | :blue | :orange | :white
 
   @type building_kind() :: :settlement | :city
-  @type building()      :: %{kind: building_kind(), color: color()}
-  # TODO: eventually check if building() couldn't be just a tuple
-
-  @type board_terrains()  :: %{tile() => terrain()}
-  @type board_tokens()    :: %{tile() => token()}
-  @type board_buildings() :: %{corner() => building()}
-  @type board_roads()     :: %{path() => color()}
+  @type building()      :: {kind :: building_kind(), color :: color()}
 
   @type victory_point_card() :: :library | :market | :chapel | :great_hall | :university
   @type progress_card()      :: :monopoly | :year_of_plenty | :road_building
@@ -34,7 +30,7 @@ defmodule Catan.Model.T do
 
   @type game_state() ::
     {:foundation, round :: 1|2, player_queue :: [color()]}
-    | {:ongoing, stage :: turn_stage(), player_queue :: color()}
+    | {:ongoing, stage :: turn_stage(), player_queue :: [color()]}
     | {:won_by, winner :: color()}
 
   @type buyable() :: :development_card | :road | :settlement | :city
@@ -48,8 +44,19 @@ defmodule Catan.Model.T do
   @spec paths() :: T.path()
   def paths(), do: 1..72
 
+  @spec colors() :: [T.color()]
+  def colors(), do: [:red, :blue, :orange, :white]
+
   @spec victory_point_cards() :: [T.victory_point_card()]
   def victory_point_cards(), do: [:library, :market, :chapel, :great_hall, :university]
+
+  @spec card_victory_points(T.development_card()) :: 0|1
+  def card_victory_points(:library),     do: 1
+  def card_victory_points(:market),      do: 1
+  def card_victory_points(:chapel),      do: 1
+  def card_victory_points(:great_hall),  do: 1
+  def card_victory_points(:university),  do: 1
+  def card_victory_points(_),            do: 0
 
   @spec progress_cards() :: [T.progress_card()]
   def progress_cards(), do: [:monopoly, :year_of_plenty, :road_building]
@@ -72,7 +79,7 @@ defmodule Catan.Model.T do
   def terrain_resource(:mountains), do: :ore
   def terrain_resource(:fields),    do: :grain
   def terrain_resource(:pasture),   do: :wool
-  def terrain_resource(:desert),    do: :nil
+  def terrain_resource(:desert),    do: nil
 
   @spec cost(T.buyable()) :: [{T.resource(), integer()}]
   def cost(:development_card), do: [
@@ -94,5 +101,17 @@ defmodule Catan.Model.T do
     grain: -2,
     ore:   -3
   ]
+
+  defmacro update_nonnegative(where, amount) do
+    quote do
+      count = unquote(where)
+      result = count + unquote(amount)
+      if result < 0 do
+        {:error, :negative}
+      else
+        {:ok, put_in(unquote(where), result)}
+      end
+    end
+  end
 
 end

@@ -1,129 +1,106 @@
 defmodule Catan.Model.Game do
+  require Catan.Model.T
   alias Catan.Model.Graphs
   alias Catan.Model.Game
-  alias Catan.Model.{Player, T, Board}
+  alias Catan.Model.Player
+  alias Catan.Model.Board
+  alias Catan.Model.T
 
   defstruct [
-    :state,
     :board,
-    :players,
     :buildings,
     :roads,
-    :previous_dice_roll,
-    :robber_tile,
     :player_order,
-    :longest_road_card_holder,
-    :largest_army_card_holder,
-    :development_card_stack,
+
+    :players,
+    :state,
+    :dice_roll,
   ]
 
-  @type t() :: %__MODULE__{
-    state:                    T.game_state(),
-    board:                    Board.t(),
-    players:                  %{T.color() => Player.t()},
-    buildings:                %{T.corner() => T.building()},
-    roads:                    %{T.path() => T.color()},
-    previous_dice_roll:       T.dice_roll() | nil,
-    robber_tile:              T.tile(),
-    player_order:             [T.color()],
-    longest_road_card_holder: T.color() | nil,
-    largest_army_card_holder: T.color() | nil,
-    development_card_stack:   [T.development_card()],
+  @type t() :: %__MODULE__ {
+    board: %Board{},
+    buildings: %{T.corner() => T.building()},
+    roads: %{T.path() => T.color()},
+    player_order: [T.color()],
+
+    players: %{T.color() => %Player{}},
+    state: T.game_state(),
+    dice_roll: T.dice_roll()|nil,
   }
 
-  def update_player_resource(game, player, resource, amount) do
-    update_in(game.players[player], &Player.update_resource(&1, resource, amount))
+  defp as_result(game) do
+    {:ok, game}
   end
 
-  def update_player_resources(game, player, resource_amounts) do
-    resource_amounts
-    |> Enum.reduce(game, fn {resource, amount}, game ->
-      update_player_resource(game, player, resource, amount)
+  defp resduce(game, enum, fun) do
+    # Reduce that works better with |> for games,
+    # and that works with T.result()s (hence "res"duce)
+    Enum.reduce(enum, {:ok, game}, fn
+      elem, {:ok, game} ->
+        fun.(elem, game)
+      _, error ->
+        error
     end)
   end
 
-  def update_player_piece(game, player, piece, amount) do
-    update_in(game.players[player], &Player.update_piece(&1, piece, amount))
+  @spec beginner_game([T.color()]) :: T.result(Game.t())
+  def beginner_game(players) do
+    with {:ok, game} <- initial_game(players, Board.beginner_board()),
+         {:ok, game} <- add_roads(game, beginner_game_roads_for(players)),
+         {:ok, game} <- add_settlements(game, beginner_game_settlements_for(players))
+    do
+      resources =
+        beginner_game_producing_settlements_for(players)
+        |> Stream.flat_map(fn {corner, player} ->
+          Graphs.corner_tiles[corner]
+          |> Stream.map(fn tile ->
+            resource = T.terrain_resource(game.board.terrains[tile])
+            {player, resource, 1}
+          end)
+        end)
+      game
+      |> distribute_resources(resources)
+      |> ongoing_start_turn(players)
+      |> as_result()
+    end
   end
 
-  def update_player_development_card(game, player, card, amount) do
-    update_in(game.players[player], &Player.update_development_card(&1, card, amount))
+  @spec initial_game([T.color()], Board.t()) :: T.result(Game.t())
+  def initial_game([_|_] = player_order, %Board{} = board) do
+    cond do
+      length(player_order) != length(Enum.uniq(player_order)) ->
+        {:error, :repeated_players}
+      Enum.any?(player_order, &(&1 not in T.colors())) ->
+        {:error, :invalid_players}
+      true ->
+        {:ok, %Game{
+          state: {:foundation, 1, player_order},
+          board: board,
+          player_order: player_order,
+          players: player_order |> Map.new(&{&1, Player.initial()}),
+          buildings: %{},
+          roads: %{},
+          dice_roll: nil,
+        }}
+    end
   end
 
-  def add_settlement(game, corner, player) do
-    update_in(
-      game.buildings[corner],
-      fn nil -> %{kind: :settlement, color: player} end
-    )
-    |> update_player_piece(player, :settlement, -1)
+  @spec add_roads(Game.t(), [{T.path(), T.color()}]) :: T.result(Game.t())
+  defp add_roads(game, roads) do
+    resduce(game, roads, fn {path, color}, game ->
+      add_road(game, color, path)
+    end)
   end
 
-  def update_to_city(game, corner, player) do
-    update_in(
-      game.buildings[corner],
-      fn %{kind: :settlement, color: ^player} = building ->
-        %{building | kind: :city}
-      end
-    )
-    |> update_player_piece(player, :city,       -1)
-    |> update_player_piece(player, :settlement, +1)
+  @spec add_settlements(Game.t(), [{T.corner(), T.color()}]) :: T.result(Game.t())
+  defp add_settlements(game, settlements) do
+    resduce(game, settlements, fn {corner, color}, game ->
+      add_settlement(game, color, corner)
+    end)
   end
 
-  def add_road(game, path, color) do
-    update_in(game.roads[path], fn nil -> color end)
-    |> update_player_piece(color, :road, -1)
-  end
-
-  def initial(board, player_order) do
-    {robber_tile, _} = Enum.find(board.terrains, fn {_, terrain} -> terrain == :desert end)
-    %__MODULE__{
-      state: {:foundation, 1, player_order},
-      board: board,
-      players:
-        player_order
-        |> Stream.map(&{&1, Player.initial()})
-        |> Map.new(),
-      buildings: %{},
-      roads: %{},
-      previous_dice_roll: nil,
-      robber_tile: robber_tile,
-      player_order: player_order,
-      longest_road_card_holder: nil,
-      largest_army_card_holder: nil,
-      development_card_stack:
-        Enum.shuffle(
-          Enum.concat([
-            :knight_card |> List.duplicate(14),
-            T.victory_point_cards(), # one of each
-            T.progress_cards() |> Enum.flat_map(&List.duplicate(&1, 2))
-          ])
-        )
-    }
-  end
-
-  def beginner_settlements() do
-    [
-      {9, :red},
-      {15, :orange},
-      {18, :white},
-      {29, :red},
-      {32, :white},
-      {40, :blue},
-      {41, :orange},
-      {42, :blue},
-    ]
-  end
-
-  def producing_beginner_settlements() do
-    [
-      {41, :orange},
-      {40, :blue},
-      {32, :white},
-      {29, :red},
-    ]
-  end
-
-  def beginner_roads() do
+  @spec beginner_game_roads() :: [{T.path(), T.color()}]
+  def beginner_game_roads() do
     [
       {14, :red},
       {16, :orange},
@@ -136,239 +113,250 @@ defmodule Catan.Model.Game do
     ]
   end
 
-  def set_state(game, state) do
-    %{game | state: state}
+  @spec beginner_game_roads_for([T.color()]) :: [{T.path(), T.color()}]
+  defp beginner_game_roads_for(players) do
+    beginner_game_roads()
+    |> Enum.filter(fn {_, player} -> player in players end)
   end
 
-  def reduce(game, enum, fun) do
-    Enum.reduce(enum, game, fun)
+  @spec beginner_game_settlements() :: [{T.corner(), T.color()}]
+  def beginner_game_settlements() do
+    [
+      {9, :red},
+      {15, :orange},
+      {18, :white},
+      {29, :red},
+      {32, :white},
+      {40, :blue},
+      {41, :orange},
+      {42, :blue},
+    ]
   end
 
-  def beginner(players) do
-    board = Board.beginner()
-
-    settlements =
-      beginner_settlements()
-      |> Enum.filter(fn {_, color} -> color in players end)
-    roads =
-      beginner_roads()
-      |> Enum.filter(fn {_, color} -> color in players end)
-    resources_produced =
-      producing_beginner_settlements()
-      |> Enum.filter(fn {_, color} -> color in players end)
-      |> Enum.flat_map(fn {corner, color} ->
-        Graphs.corner_tiles[corner]
-        |> Enum.map(fn tile ->
-          resource = T.terrain_resource(board.terrains[tile])
-          {resource, color}
-        end)
-      end)
-
-    initial(board, players)
-    |> reduce(settlements, fn {corner, color}, game ->
-      add_settlement(game, corner, color)
-    end)
-    |> reduce(roads, fn {path, color}, game ->
-      add_road(game, path, color)
-    end)
-    |> reduce(resources_produced, fn {resource, color}, game ->
-      update_player_resource(game, color, resource, 1)
-    end)
-    |> set_state({:ongoing, :trading, players})
+  @spec beginner_game_settlements_for([T.color()]) :: [{T.path(), T.color()}]
+  defp beginner_game_settlements_for(players) do
+    beginner_game_settlements()
+    |> Enum.filter(fn {_, player} -> player in players end)
   end
 
-  def place_starting_settlement_and_road(
-    %Game{state: {:foundation, 1, queue}} = game, corner, path
-  ) do
-    [player | rest] = queue
-    next_state =
-      case rest do
-        [] -> {:foundation, 2, Enum.reverse(game.player_order)}
-        _  -> {:foundation, 1, rest}
+  @spec beginner_game_producing_settlements() :: [{T.corner(), T.color()}]
+  def beginner_game_producing_settlements() do
+    [
+      {41, :orange},
+      {40, :blue},
+      {32, :white},
+      {29, :red},
+    ]
+  end
+
+  @spec beginner_game_producing_settlements_for([T.color()]) :: [{T.path(), T.color()}]
+  defp beginner_game_producing_settlements_for(players) do
+    beginner_game_producing_settlements()
+    |> Enum.filter(fn {_, player} -> player in players end)
+  end
+
+
+  @spec update_player_piece(Game.t(), T.color(), T.piece(), integer()) :: T.result(Game.t())
+  defp update_player_piece(game, player, piece, amount) do
+    T.update_nonnegative(game.players[player].pieces[piece], amount)
+  end
+
+  @spec adjacent_roads(Game.t(), T.corner()) :: [T.color()]
+  defp adjacent_roads(game, corner) do
+    Graphs.corner_paths[corner]
+    |> Enum.flat_map(fn {path, _} ->
+      case game.roads[path] do
+        nil -> []
+        color -> [color]
       end
-    game
-    |> add_settlement(corner, player)
-    |> add_road(path, player)
-    |> set_state(next_state)
+    end)
   end
 
-  def place_starting_settlement_and_road(
-    %Game{state: {:foundation, 2, queue}} = game,
-    corner, path
-  ) do
-    [player | rest] = queue
-    resources_produced =
-      for tile <- Graphs.corner_tiles[corner] do
-        resource = T.terrain_resource(game.board.terrains[tile])
-        {resource, 1}
+  @spec adjacent_buildings(Game.t(), T.corner()) :: [T.building()]
+  defp adjacent_buildings(game, corner) do
+    Graphs.corner_paths[corner]
+    |> Enum.flat_map(fn {_, other_corner} ->
+      case game.buildings[other_corner] do
+        nil -> []
+        building -> [building]
       end
-    game =
-      game
-      |> add_settlement(corner, player)
-      |> add_road(path, player)
-      |> update_player_resources(player, resources_produced)
-    case rest do
-      [] -> advance_player_turn(game)
-      _  -> set_state(game, {:foundation, 2, rest})
+    end)
+  end
+
+  @spec add_settlement(Game.t(), T.color(), T.corner()) :: T.result(Game.t())
+  defp add_settlement(game, player, corner) do
+    cond do
+      game.buildings[corner] ->
+        {:error, :occupied}
+      adjacent_buildings(game, corner) != [] ->
+        {:error, :adjacent_building}
+      true ->
+        with {:ok, game} <- update_player_piece(game, player, :settlement, -1) do
+          {:ok, put_in(game.buildings[corner], {:settlement, player})}
+        end
     end
   end
 
-  def advance_player_turn(
-    %Game{state: {:founding, 2, []}, player_order: queue} = game
-  ), do: advance_player_turn(game, queue)
-
-  def advance_player_turn(
-    %Game{state: {:ongoing, :building, queue}} = game
-  ), do: advance_player_turn(game, queue)
-
-  def tile_resource_production(game, tile) do
-    resource = T.terrain_resource(game.board.terrains[tile])
-    Graphs.tile_corners[tile]
-    |> Stream.map(fn corner ->
-      building = game.buildings[corner]
-      case building do
-        nil -> nil
-        %{kind: kind, color: player} ->
-          amount = T.building_weight(kind)
-          {resource, player, amount}
+  @spec add_road(Game.t(), T.color(), T.path()) :: T.result(Game.t())
+  defp add_road(game, player, path) do
+    if game.roads[path] do
+      {:error, :occupied}
+    else
+      with {:ok, game} <- update_player_piece(game, player, :road, -1) do
+        {:ok, put_in(game.roads[path], player)}
       end
-    end)
-    |> Stream.filter(&(&1))
+    end
   end
 
-  def affected_tiles(game, dice_roll) do
-    T.tiles()
-    |> Stream.filter(fn tile -> game.board.tokens[tile] == dice_roll end)
-    |> Stream.reject(fn tile -> tile == game.robber_tile end)
+  @spec update_player_resource(Game.t(), T.color(), T.resource(), integer()) :: T.result(Game.t())
+  defp update_player_resource(game, player, resource, amount) do
+    T.update_nonnegative(game.players[player].resources[resource], amount)
   end
 
-  def distribute_resources(game, resources) do
-    resources
-    |> Enum.reduce(game, fn {resource, player, amount}, game ->
+  @spec update_player_resources(Game.t(), T.color(), [{T.resource(), integer()}]) :: T.result(Game.t())
+  defp update_player_resources(game, player, resources) do
+    resduce(game, resources, fn {resource, amount}, game ->
       update_player_resource(game, player, resource, amount)
     end)
   end
 
-  defp advance_player_turn(game, [prev_player | next_players]) do
-    queue = next_players ++ [prev_player]
-    dice_roll = :rand.uniform(6) + :rand.uniform(6)
-    game = %{game | previous_dice_roll: dice_roll}
-    case dice_roll do
+  @spec dice_roll() :: T.dice_roll()
+  defp dice_roll() do
+    :rand.uniform(6) + :rand.uniform(6)
+  end
+
+  @spec affected_tiles(Game.t(), T.dice_roll()) :: [T.tile()]
+  defp affected_tiles(game, roll) do
+    game.board.tokens
+    |> Stream.filter(fn {_tile, token} -> token == roll end)
+    |> Stream.map(fn {tile, _token} -> tile end)
+  end
+
+  @spec tile_resource_production(Game.t(), T.tile()) :: [{T.color(), T.resource(), integer()}]
+  defp tile_resource_production(game, tile) do
+    resource = T.terrain_resource(game.board.terrains[tile])
+    Graphs.tile_corners[tile]
+    |> Stream.flat_map(fn corner ->
+      building = game.buildings[corner]
+      case building do
+        nil            -> []
+        {kind, player} -> [{player, resource, T.building_weight(kind)}]
+      end
+    end)
+  end
+
+  @spec distribute_resources(Game.t(), [{T.color(), T.resource(), integer()}]) :: Game.t()
+  defp distribute_resources(game, resources) do
+    {:ok, game} =
+      resduce(game, resources, fn {player, resource, amount}, game ->
+        update_player_resource(game, player, resource, amount)
+      end)
+    game
+  end
+
+
+  @spec finish_turn(Game.t()) :: Game.t()
+
+  defp finish_turn(%Game{state: {:foundation, 1, [_last]}, player_order: player_order} = game) do
+    %{game | state: {:foundation, 2, Enum.reverse(player_order)}}
+  end
+
+  defp finish_turn(%Game{state: {:foundation, 1, [_|rest]}} = game) do
+    %{game | state: {:foundation, 1, rest}}
+  end
+
+  defp finish_turn(%Game{state: {:foundation, 2, [_last]}, player_order: player_order} = game) do
+    ongoing_start_turn(game, player_order)
+  end
+
+  defp finish_turn(%Game{state: {:foundation, 2, [_ | rest]}} = game) do
+    %{game | state: {:foundation, 2, rest}}
+  end
+
+  defp finish_turn(%Game{state: {:ongoing, stage, [prev_player | next_players]}} = game)
+  when stage == :trading or stage == :building
+  do
+    # TODO:
+    # - consolidate new development cards
+    # - update special card holders
+    # - update victory points
+    # - check for winner
+    # if no winner, then start a new turn like below
+    ongoing_start_turn(game, next_players ++ [prev_player])
+  end
+
+  @spec end_turn(Game.t()) :: Game.t()
+  def end_turn(%Game{state: {:ongoing, stage, _}} = game)
+  when stage == :trading or stage == :building
+  do
+    finish_turn(game)
+  end
+
+
+  @spec ongoing_start_turn(Game.t(), [T.color()]) :: Game.t()
+  defp ongoing_start_turn(game, player_queue) do
+    case roll = dice_roll() do
       7 ->
-        game
-        |> set_state({:ongoing, :moving_robber, queue})
+        %{game |
+          state: {:ongoing, :moving_robber, player_queue},
+          dice_roll: roll,
+        }
       _ ->
-        produced_resources =
-          affected_tiles(game, dice_roll)
+        resources =
+          affected_tiles(game, roll)
           |> Stream.flat_map(&tile_resource_production(game, &1))
-        game
-        |> set_state({:ongoing, :trading, queue})
-        |> distribute_resources(produced_resources)
+        game = distribute_resources(game, resources)
+        %{game |
+          state: {:ongoing, :trading, player_queue},
+          dice_roll: roll,
+        }
+      end
+  end
+
+
+  @spec place_starting_pieces(Game.t(), T.corner(), T.path()) :: T.result(Game.t())
+
+  def place_starting_pieces(
+    %Game{state: {:foundation, 1, [player|_]}} = game,
+    settlement_corner, road_path
+  ) do
+    with {:ok, game} <- add_starting_pieces(game, player, settlement_corner, road_path) do
+      {:ok, finish_turn(game)}
     end
   end
 
-  # TODO: steal player card when moving robber
-  def move_robber(
-    %Game{state: {:ongoing, :moving_robber, queue}} = game,
-    tile
+  def place_starting_pieces(
+    %Game{state: {:foundation, 2, [player|_]}} = game,
+    settlement_corner, road_path
   ) do
-    %{game |
-      robber_tile: tile,
-      state: {:ongoing, :trading, queue}
-    }
+    with {:ok, game} <- add_starting_pieces(game, player, settlement_corner, road_path),
+         resources =
+          Graphs.corner_tiles[settlement_corner]
+          |> Stream.map(fn tile ->
+            resource = T.terrain_resource(game.board.terrains[tile])
+            {resource, 1}
+          end),
+         {:ok, game} <- update_player_resources(game, player, resources)
+    do
+      {:ok, finish_turn(game)}
+    end
   end
 
-  def trade_with_bank(
-    %Game{state: {:ongoing, :trading, [player | _]}} = game,
-    player_resource, amount, bank_resource
-  ) do
-    game
-    |> update_player_resource(player, player_resource, -amount)
-    |> update_player_resource(player,   bank_resource,       1)
+
+  @spec add_starting_pieces(Game.t(), T.color(), T.corner(), T.path()) :: T.result(Game.t())
+  defp add_starting_pieces(game, player, corner, path) do
+    adjacent_paths =
+      Graphs.corner_paths[corner]
+      |> Enum.map(&elem(&1, 0))
+    if path not in adjacent_paths do
+      {:error, :path_not_adjacent}
+    else
+      with {:ok, game} <- add_road(game, player, path),
+           {:ok, game} <- add_settlement(game, player, corner)
+      do
+        {:ok, game}
+      end
+    end
   end
-
-  def transfer_resource(game, from_player, to_player, resource, amount) do
-    game
-    |> update_player_resource(from_player, resource, -amount)
-    |> update_player_resource(  to_player, resource, +amount)
-  end
-
-  def trade_with_player(
-    %Game{state: {:ongoing, :trading, [player | _]}} = game,
-    other_player, giving, receiving
-  ) do
-    game
-    |> reduce(giving, fn {resource, amount}, game ->
-      transfer_resource(game, player, other_player, resource, amount)
-    end)
-    |> reduce(receiving, fn {resource, amount}, game ->
-      transfer_resource(game, other_player, player, resource, amount)
-    end)
-  end
-
-  def finish_trading(%Game{state: {:ongoing, :trading, queue}} = game) do
-    game
-    |> set_state({:ongoing, :building, queue})
-  end
-
-  def build_settlement(
-    %Game{state: {:ongoing, :building, [player | _]}} = game,
-    corner
-  ) do
-    game
-    |> add_settlement(corner, player)
-    |> update_player_resources(player, T.cost(:settlement))
-  end
-
-  def build_city(
-    %Game{state: {:ongoing, :building, [player | _]}} = game,
-    corner
-  ) do
-    game
-    |> update_to_city(corner, player)
-    |> update_player_resources(player, T.cost(:city))
-  end
-
-  def build_road(
-    %Game{state: {:ongoing, :building, [player | _]}} = game,
-    path
-  ) do
-    game
-    |> add_road(path, player)
-    |> update_player_resources(player, T.cost(:road))
-  end
-
-  def pop_development_card(game) do
-    [card | stack] = game.development_card_stack
-    {card, %{game | development_card_stack: stack}}
-  end
-
-  def buy_development_card(
-    %Game{state: {:ongoing, :building, [player | _]}} = game
-  ) do
-    {card, game} = pop_development_card(game)
-    game
-    |> update_player_development_card(player, card, 1)
-    |> update_player_resources(player, T.cost(:development_card))
-  end
-
-  # TODO: test!!
-  # TODO: write tests?
-  # TODO: redo @specs?
-
-  # TODO: detect when changes should be made to longest_road_card_holder and largest_army_card_holder
-  # TODO: detect when a player wins the game
-  # ---> in that order
-
-  # (both TODOs above probably in some finish_player_turn method, that:
-  # - updates state to :won_by if game over, or
-  # - dispatches to advance_player_turn if not over yet)
-
-  # TODO: play_development_card()
-  # can be used at any stage of the turn
-
-  # TODO: difference between _new_ development cards (cannot be used in the current)
-  # and ones that the player has already had for a turn
-  # -- when finishing the turn, the "new" cards are transferred to the :development_cards entry
 
 end
