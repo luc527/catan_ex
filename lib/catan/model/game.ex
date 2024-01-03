@@ -161,13 +161,29 @@ defmodule Catan.Model.Game do
     T.update_nonnegative(game.players[player].pieces[piece], amount)
   end
 
-  @spec adjacent_roads(Game.t(), T.corner()) :: [T.color()]
-  defp adjacent_roads(game, corner) do
+  @spec corner_adjacent_roads(Game.t(), T.corner()) :: [T.color()]
+  defp corner_adjacent_roads(game, corner) do
     Graphs.corner_paths[corner]
     |> Enum.flat_map(fn {path, _} ->
       case game.roads[path] do
         nil -> []
         color -> [color]
+      end
+    end)
+  end
+
+  @spec path_adjacent_roads(Game.t(), T.path()) :: [T.color()]
+  defp path_adjacent_roads(game, path) do
+    Graphs.path_corners[path]
+    |> Enum.flat_map(fn corner -> Graphs.corner_paths[corner] end)
+    |> Enum.flat_map(fn {other_path, _} ->
+      if other_path == path do
+        []
+      else
+        case game.roads[other_path] do
+          nil -> []
+          road -> [road]
+        end
       end
     end)
   end
@@ -433,6 +449,57 @@ defmodule Catan.Model.Game do
   @spec finish_trading(Game.t()) :: Game.t()
   def finish_trading(%Game{state: {:ongoing, :trading, queue}} = game) do
     %{game | state: {:ongoing, :building, queue}}
+  end
+
+  # TODO deal with :moving_robber state
+
+  @spec build_road(Game.t(), T.path()) :: T.result(Game.t())
+  def build_road(
+    %Game{state: {:ongoing, :building, [player|_]}} = game,
+    path
+  ) do
+    if player not in path_adjacent_roads(game, path) do
+      {:error, :no_adjacent_roads}
+    else
+      with {:ok, game} <- add_road(game, player, path) do
+        update_player_resources(game, player, T.cost(:road))
+      end
+    end
+  end
+
+  @spec build_settlement(Game.t(), T.corner()) :: T.result(Game.t())
+  def build_settlement(
+    %Game{state: {:ongoing, :building, [player|_]}} = game,
+    corner
+  ) do
+    if player not in corner_adjacent_roads(game, corner) do
+      {:error, :no_adjacent_roads}
+    else
+      with {:ok, game} <- add_settlement(game, player, corner) do
+        update_player_resources(game, player, T.cost(:settlement))
+      end
+    end
+  end
+
+  @spec build_city(Game.t(), T.corner()) :: T.result(Game.t())
+  def build_city(
+    %Game{state: {:ongoing, :building, [player|_]}} = game,
+    corner
+  ) do
+    case game.buildings[corner] do
+      nil ->
+        {:error, :no_settlement}
+      {:city, _} ->
+        {:error, :occupied}
+      {_, building_color} when building_color != player ->
+        {:error, :settlement_not_yours}
+      {:settlement, ^player} ->
+        with {:ok, game} <- update_player_resources(game, player, T.cost(:city)),
+             {:ok, game} <- update_player_piece(game, player, :city, -1)
+        do
+          {:ok, put_in(game.buildings[corner], {:city, player})}
+        end
+    end
   end
 
 end
