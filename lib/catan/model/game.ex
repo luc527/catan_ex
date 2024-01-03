@@ -289,6 +289,7 @@ defmodule Catan.Model.Game do
   def end_turn(%Game{state: {:ongoing, stage, _}} = game)
   when stage == :trading or stage == :building
   do
+    # Because finish_turn is private
     finish_turn(game)
   end
 
@@ -357,6 +358,81 @@ defmodule Catan.Model.Game do
         {:ok, game}
       end
     end
+  end
+
+  @spec _trade_with_bank(Game.t(), T.resource(), integer(), T.resource()) :: T.result(Game.t())
+  defp _trade_with_bank(
+    %Game{state: {:ongoing, :trading, [player|_]}} = game,
+    player_resource, amount, bank_resource
+  ) do
+    if player_resource == bank_resource do
+      {:error, :trading_same}
+    else
+      update_player_resources(game, player, [
+        {player_resource, -amount},
+        {bank_resource, 1}
+      ])
+    end
+  end
+
+
+  @spec trade_with_bank(Game.t(), T.resource(), integer(), T.resource()) :: T.result(Game.t())
+
+  def trade_with_bank(
+    %Game{state: {:ongoing, :trading, _}} = game,
+    player_resource, amount, bank_resource
+  ) when amount == 4 do
+    _trade_with_bank(game, player_resource, amount, bank_resource)
+  end
+
+  #amount==3: player needs 3:1 harbour
+  #amount==2: player needs 2:1 harbour of the specific resource being traded
+
+  def trade_with_bank(%Game{state: {:ongoing, :trading, _}}, _player_resource, _amount, _bank_resource) do
+    {:error, :invalid_amount}
+  end
+
+  def trade_with_bank(_, _, _, _) do
+    {:error, :invalid_state}
+  end
+
+
+  @spec transfer_resources(Game.t(), T.color(), T.color(), [{T.resource(), integer()}]) :: T.result(Game.t())
+  defp transfer_resources(game, from_player, to_player, resources) do
+    with {:ok, game} <- update_player_resources(
+                          game,
+                          from_player,
+                          Stream.map(resources, fn {resource, amount} -> {resource, -amount} end))
+    do
+      update_player_resources(game, to_player, resources)
+    end
+  end
+
+  @spec trade_with_player(Game.t(), T.color(), [{T.resource(), integer()}], [{T.resource(), integer()}]) :: T.result(Game.t())
+  def trade_with_player(
+    %Game{state: {:ongoing, :trading, [player|_]}} = game,
+    other_player, resources_given, resources_received
+  ) do
+    cond do
+      player == other_player ->
+        {:error, :trading_with_yourself}
+      resources_given == [] or resources_received == [] ->
+        {:error, :trading_for_free}
+      not MapSet.disjoint?(
+        resources_given |> MapSet.new(&elem(&1, 0)),
+        resources_received |> MapSet.new(&elem(&1, 0))
+      ) ->
+        {:error, :trading_same}
+      true ->
+        with {:ok, game} <- transfer_resources(game, player, other_player, resources_given) do
+          transfer_resources(game, other_player, player, resources_received)
+        end
+    end
+  end
+
+  @spec finish_trading(Game.t()) :: Game.t()
+  def finish_trading(%Game{state: {:ongoing, :trading, queue}} = game) do
+    %{game | state: {:ongoing, :building, queue}}
   end
 
 end
