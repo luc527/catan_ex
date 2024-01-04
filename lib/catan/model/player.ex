@@ -29,4 +29,12 @@ defmodule Catan.Model.Player do
     }
   end
 
+  def number_of_resource_cards(player) do
+    player.resources
+    |> Map.values()
+    |> Enum.sum()
+  end
+
+
+
 end

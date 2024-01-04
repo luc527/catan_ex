@@ -26,7 +26,11 @@ defmodule Catan.Model.T do
 
   @type piece() :: :settlement | :city | :road
 
-  @type turn_stage() :: :moving_robber | :trading | :building
+  @type turn_stage() ::
+    :moving_robber
+    | :trading
+    | :building
+    | {:choosing_stolen_cards, players_remaining :: [color()]}
 
   @type game_state() ::
     {:foundation, round :: 1|2, player_queue :: [color()]}

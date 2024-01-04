@@ -1,13 +1,3 @@
-# TODO: dice roll 7
-# every player with more than 7 cards must choose floor(num_cards/2) of them and give them away
-# {:ongoing, ...}
-# -> dice roll 7
-# {:ongoing, {:choosing_stolen_cards, remaining_players}, queue}
-# -> players choose cards to remove (in any order)
-# {:ongoing, :moving_robber, queue}
-# -> places robber, steals player
-# {:ongoing, :trading, queue}
-
 defmodule Catan.Model.Game do
   require Catan.Model.T
   alias Catan.Model.Graphs
@@ -84,8 +74,10 @@ defmodule Catan.Model.Game do
     cond do
       length(player_order) != length(Enum.uniq(player_order)) ->
         {:error, :repeated_players}
+
       Enum.any?(player_order, &(&1 not in T.colors())) ->
         {:error, :invalid_players}
+
       true ->
         [{robber_tile, _}] =
           board.terrains
@@ -328,13 +320,22 @@ defmodule Catan.Model.Game do
     finish_turn(game)
   end
 
-
   @spec ongoing_start_turn(Game.t(), [T.color()]) :: Game.t()
   defp ongoing_start_turn(game, player_queue) do
     case roll = dice_roll() do
       7 ->
+        stolen_players =
+          game.players
+          |> Enum.filter(fn {_, player} -> Player.number_of_resource_cards(player) > 7 end)
+          |> Enum.map(fn {color, _} -> color end)
+        next_stage =
+          if stolen_players == [] do
+            :moving_robber
+          else
+            {:choosing_stolen_cards, stolen_players}
+          end
         %{game |
-          state: {:ongoing, :moving_robber, player_queue},
+          state: {:ongoing, next_stage, player_queue},
           dice_roll: roll,
         }
       _ ->
@@ -432,14 +433,19 @@ defmodule Catan.Model.Game do
   end
 
 
+  @spec negate_resources([{T.resource(), integer()}]) :: [{T.resource(), integer()}]
+  defp negate_resources(resources) do
+    resources
+    |> Enum.map(fn {res, amt} -> {res, -amt} end)
+  end
+
+
   @spec transfer_resources(Game.t(), T.color(), T.color(), [{T.resource(), integer()}]) :: T.result(Game.t())
   defp transfer_resources(game, from_player, to_player, resources) do
-    with {:ok, game} <- update_player_resources(
-                          game,
-                          from_player,
-                          Stream.map(resources, fn {resource, amount} -> {resource, -amount} end))
+    with {:ok, game} <- update_player_resources(game, from_player, negate_resources(resources)),
+         {:ok, game} <- update_player_resources(game, to_player, resources)
     do
-      update_player_resources(game, to_player, resources)
+      {:ok, game}
     end
   end
 
@@ -451,13 +457,16 @@ defmodule Catan.Model.Game do
     cond do
       player == other_player ->
         {:error, :trading_with_yourself}
+
       resources_given == [] or resources_received == [] ->
         {:error, :trading_for_free}
+
       not MapSet.disjoint?(
         resources_given |> MapSet.new(&elem(&1, 0)),
         resources_received |> MapSet.new(&elem(&1, 0))
       ) ->
         {:error, :trading_same}
+
       true ->
         with {:ok, game} <- transfer_resources(game, player, other_player, resources_given) do
           transfer_resources(game, other_player, player, resources_received)
@@ -468,6 +477,40 @@ defmodule Catan.Model.Game do
   @spec finish_trading(Game.t()) :: Game.t()
   def finish_trading(%Game{state: {:ongoing, :trading, queue}} = game) do
     %{game | state: {:ongoing, :building, queue}}
+  end
+
+  @spec choose_stolen_cards(Game.t(), T.color(), [{T.resource(), integer()}]) :: T.result(Game.t())
+  def choose_stolen_cards(
+    %Game{state: {:ongoing, {:choosing_stolen_cards, players_remaining}, queue}} = game,
+    player, cards
+  ) do
+    num_given_cards =
+      cards
+      |> Enum.map(fn {_, amount} -> amount end)
+      |> Enum.sum()
+    num_want_cards =
+      div(Player.number_of_resource_cards(game.players[player]), 2)
+
+    cond do
+      player not in players_remaining ->
+        {:error, :no_stolen_cards}
+
+      num_given_cards != num_want_cards ->
+        {:error, :invalid_card_amount}
+
+      true ->
+        with {:ok, game} <- update_player_resources(game, player, negate_resources(cards)) do
+          players_remaining = List.delete(players_remaining, player)
+          next_stage =
+            if players_remaining == [] do
+              :moving_robber
+            else
+              {:choosing_stolen_cards, players_remaining}
+            end
+          {:ok, %{game | state: {:ongoing, next_stage, queue}}}
+        end
+    end
+
   end
 
   @spec move_robber(Game.t(), T.tile(), T.color() | nil) :: T.result(Game.t())
@@ -499,21 +542,19 @@ defmodule Catan.Model.Game do
           robber_tile: tile,
           state: {:ongoing, :trading, queue},
         }
-        resource_cards =
+        stealable_resources =
           if stolen_player do
             game.players[stolen_player].resources
             |> Enum.flat_map(fn {resource, amount} -> List.duplicate(resource, amount) end)
           else
             []
           end
-        if resource_cards == [] do
+        if stealable_resources == [] do
           {:ok, game}
         else
-          # This is a little inefficient
-          stolen_resource = Enum.at(resource_cards, :rand.uniform(length(resource_cards)) - 1)
-          with {:ok, game} <- transfer_resources(game, stolen_player, player, [{stolen_resource, 1}]) do
-            {:ok, game}
-          end
+          # O(n) due to linked list
+          stolen_resource = Enum.at(stealable_resources, :rand.uniform(length(stealable_resources)) - 1)
+          transfer_resources(game, stolen_player, player, [{stolen_resource, 1}])
         end
     end
   end
