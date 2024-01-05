@@ -17,6 +17,13 @@ defmodule Catan.Model.Game do
     :state,
     :dice_roll,
     :robber_tile,
+    :development_card_stack,
+
+    # You cannot use a development card in the same turn you bought it.
+    # To ensure this, when a player buys a card, the card is first inserted into this list,
+    # and only when the turn is ended that the card is added to the player structure,
+    # so it's available to use in the next turn.
+    :new_development_cards,
   ]
 
   @type t() :: %__MODULE__ {
@@ -26,10 +33,12 @@ defmodule Catan.Model.Game do
     buildings: %{T.corner() => T.building()},
     roads:     %{T.path() => T.color()},
 
-    players:     %{T.color() => %Player{}},
-    state:       T.game_state(),
-    dice_roll:   T.dice_roll()|nil,
-    robber_tile: T.tile()
+    players:                %{T.color() => %Player{}},
+    state:                  T.game_state(),
+    dice_roll:              T.dice_roll()|nil,
+    robber_tile:            T.tile(),
+    development_card_stack: [T.development_card()],
+    new_development_cards:  [T.development_card()],
   }
 
   defp as_result(game) do
@@ -69,6 +78,17 @@ defmodule Catan.Model.Game do
     end
   end
 
+  @spec shuffled_development_cards() :: [T.development_card()]
+  defp shuffled_development_cards() do
+    Enum.shuffle(
+      Enum.concat([
+        T.progress_cards() |> Enum.flat_map(&List.duplicate(&1, 2)),
+        :knight_card |> List.duplicate(14),
+        T.victory_point_cards(),
+      ])
+    )
+  end
+
   @spec initial_game([T.color()], Board.t()) :: T.result(Game.t())
   def initial_game([_|_] = player_order, %Board{} = board) do
     cond do
@@ -91,6 +111,8 @@ defmodule Catan.Model.Game do
           roads: %{},
           dice_roll: nil,
           robber_tile: robber_tile,
+          development_card_stack: shuffled_development_cards(),
+          new_development_cards: [],
         }}
     end
   end
@@ -246,6 +268,14 @@ defmodule Catan.Model.Game do
     end)
   end
 
+  @spec consolidate_new_development_cards(Game.t()) :: T.result(Game.t())
+  defp consolidate_new_development_cards(%Game{state: {:ongoing, _, [player|_]}} = game) do
+    {cards, game} = get_and_update_in(game.new_development_cards, &{&1, []})
+    resduce(game, cards, fn card, game ->
+      T.update_nonnegative(game.players[player].development_cards[card], 1)
+    end)
+  end
+
   @spec dice_roll() :: T.dice_roll()
   defp dice_roll() do
     :rand.uniform(6) + :rand.uniform(6)
@@ -282,37 +312,38 @@ defmodule Catan.Model.Game do
   end
 
 
-  @spec finish_turn(Game.t()) :: Game.t()
+  @spec finish_turn(Game.t()) :: T.result(Game.t())
 
   defp finish_turn(%Game{state: {:foundation, 1, [_last]}, player_order: player_order} = game) do
-    %{game | state: {:foundation, 2, Enum.reverse(player_order)}}
+    {:ok, %{game | state: {:foundation, 2, Enum.reverse(player_order)}}}
   end
 
   defp finish_turn(%Game{state: {:foundation, 1, [_|rest]}} = game) do
-    %{game | state: {:foundation, 1, rest}}
+    {:ok, %{game | state: {:foundation, 1, rest}}}
   end
 
   defp finish_turn(%Game{state: {:foundation, 2, [_last]}, player_order: player_order} = game) do
-    ongoing_start_turn(game, player_order)
+    {:ok, ongoing_start_turn(game, player_order)}
   end
 
   defp finish_turn(%Game{state: {:foundation, 2, [_ | rest]}} = game) do
-    %{game | state: {:foundation, 2, rest}}
+    {:ok, %{game | state: {:foundation, 2, rest}}}
   end
 
   defp finish_turn(%Game{state: {:ongoing, stage, [prev_player | next_players]}} = game)
   when stage == :trading or stage == :building
   do
-    # TODO:
-    # - consolidate new development cards
-    # - update special card holders
-    # - update victory points
-    # - check for winner
-    # if no winner, then start a new turn like below
-    ongoing_start_turn(game, next_players ++ [prev_player])
+    with {:ok, game} = consolidate_new_development_cards(game) do
+      # TODO:
+      # - update special card holders
+      # - update victory points
+      # - check for winner
+      # if no winner, then start a new turn like below
+      {:ok, ongoing_start_turn(game, next_players ++ [prev_player])}
+    end
   end
 
-  @spec end_turn(Game.t()) :: Game.t()
+  @spec end_turn(Game.t()) :: T.result(Game.t())
   def end_turn(%Game{state: {:ongoing, stage, _}} = game)
   when stage == :trading or stage == :building
   do
@@ -358,7 +389,7 @@ defmodule Catan.Model.Game do
     settlement_corner, road_path
   ) do
     with {:ok, game} <- add_starting_pieces(game, player, settlement_corner, road_path) do
-      {:ok, finish_turn(game)}
+      finish_turn(game)
     end
   end
 
@@ -375,7 +406,7 @@ defmodule Catan.Model.Game do
           end),
          {:ok, game} <- update_player_resources(game, player, resources)
     do
-      {:ok, finish_turn(game)}
+      finish_turn(game)
     end
   end
 
@@ -420,6 +451,8 @@ defmodule Catan.Model.Game do
   ) when amount == 4 do
     _trade_with_bank(game, player_resource, amount, bank_resource)
   end
+
+  # TODO: test the two function clauses below more thoroughly
 
   def trade_with_bank(
     %Game{state: {:ongoing, :trading, [player|_]}} = game,
@@ -652,6 +685,27 @@ defmodule Catan.Model.Game do
         do
           {:ok, put_in(game.buildings[corner], {:city, player})}
         end
+    end
+  end
+
+  @spec pop_development_card(Game.t()) :: T.result({T.development_card(), T.game()})
+  defp pop_development_card(game) do
+    case game.development_card_stack do
+      [] ->
+        {:error, :no_development_cards_left}
+      [card | rest] ->
+        {:ok, {card, %{game | development_card_stack: rest}}}
+    end
+  end
+
+  @spec buy_development_card(Game.t()) :: T.result(Game.t())
+  def buy_development_card(
+    %Game{state: {:ongoing, :building, [player|_]}} = game
+  ) do
+    with {:ok, {card, game}} <- pop_development_card(game),
+         {:ok, game} <- update_player_resources(game, player, T.cost(:development_card))
+    do
+      {:ok, update_in(game.new_development_cards, &[card | &1])}
     end
   end
 
