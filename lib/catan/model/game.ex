@@ -421,8 +421,52 @@ defmodule Catan.Model.Game do
     _trade_with_bank(game, player_resource, amount, bank_resource)
   end
 
-  #amount==3: player needs 3:1 harbour
-  #amount==2: player needs 2:1 harbour of the specific resource being traded
+  def trade_with_bank(
+    %Game{state: {:ongoing, :trading, [player|_]}} = game,
+    player_resource, amount, bank_resource
+  ) when amount == 3 do
+
+    has_three_for_one =
+      game.board.harbors
+      |> Enum.any?(fn
+        {corner, :three_for_one} ->
+          case game.buildings[corner] do
+            nil -> false
+            {_, color} -> color == player
+          end
+        _ -> false
+      end)
+
+    if not has_three_for_one do
+      {:error, :no_harbor}
+    else
+      _trade_with_bank(game, player_resource, amount, bank_resource)
+    end
+  end
+
+  def trade_with_bank(
+    %Game{state: {:ongoing, :trading, [player|_]}} = game,
+    player_resource, amount, bank_resource
+  ) when amount == 2 do
+
+    has_two_for_one =
+      game.board.harbors
+      |> Enum.any?(fn
+        {_, :three_for_one} -> false
+        {corner, {:two_for_one, ^player_resource}} ->
+          case game.buildings[corner] do
+            nil -> false
+            {_, color} -> color == player
+          end
+        {_, {:two_for_one, _}} -> false
+      end)
+
+    if not has_two_for_one do
+      {:error, :no_harbor}
+    else
+      _trade_with_bank(game, player_resource, amount, bank_resource)
+    end
+  end
 
   def trade_with_bank(%Game{state: {:ongoing, :trading, _}}, _player_resource, _amount, _bank_resource) do
     {:error, :invalid_amount}

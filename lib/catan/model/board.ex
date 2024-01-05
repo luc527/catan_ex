@@ -1,16 +1,16 @@
 defmodule Catan.Model.Board do
   alias Catan.Model.{Board, T}
 
-  # TODO: harbors
-
   defstruct [
-    terrains: %{},
-    tokens: %{},
+    :terrains,
+    :tokens,
+    :harbors,
   ]
 
   @type t() :: %__MODULE__{
     terrains: %{T.tile() => T.terrain()},
     tokens:   %{T.tile() => T.token()},
+    harbors:  %{T.corner() => T.harbor()}
   }
 
   @spec available_terrains() :: [T.terrain()]
@@ -97,6 +97,7 @@ defmodule Catan.Model.Board do
     %Board{
       terrains: beginner_board_terrains(),
       tokens: beginner_board_tokens(),
+      harbors: beginner_board_harbors(),
     }
   end
 
@@ -107,8 +108,66 @@ defmodule Catan.Model.Board do
     %Board{
       terrains: terrains,
       tokens: tokens,
+      harbors: random_harbors(),
     }
   end
+
+  @spec available_harbors() :: [T.harbor()]
+  def available_harbors() do
+    Enum.concat([
+      T.resources() |> Enum.map(&{:two_for_one, &1}),
+      List.duplicate(:three_for_one, 4)
+    ])
+  end
+
+  @spec harbor_corner_pairs() :: [{T.corner(), T.corner()}]
+  def harbor_corner_pairs() do
+    [
+      {1, 4},
+      {2, 6},
+      {11, 16},
+      {27, 33},
+      {43, 47},
+      {50, 53},
+      {48, 52},
+      {34, 39},
+      {12, 17},
+    ]
+  end
+
+  @spec random_harbors() :: %{T.corner() => T.harbor()}
+  def random_harbors() do
+    available_harbors()
+    |> Enum.shuffle()
+    |> Enum.zip(harbor_corner_pairs())
+    |> Enum.flat_map(fn {harbor, {c1, c2}} -> [{c1, harbor}, {c2, harbor}] end)
+    |> Map.new()
+  end
+
+  @spec beginner_board_harbors() :: %{T.corner() => T.harbor()}
+  def beginner_board_harbors() do
+    %{
+      1 => :three_for_one,
+      4 => :three_for_one,
+      2 => {:two_for_one, :grain},
+      6 => {:two_for_one, :grain},
+      11 => {:two_for_one, :ore},
+      16 => {:two_for_one, :ore},
+      27 => :three_for_one,
+      33 => :three_for_one,
+      43 => {:two_for_one, :wool},
+      47 => {:two_for_one, :wool},
+      50 => :three_for_one,
+      53 => :three_for_one,
+      48 => :three_for_one,
+      52 => :three_for_one,
+      34 => {:two_for_one, :brick},
+      39 => {:two_for_one, :brick},
+      12 => {:two_for_one, :lumber},
+      17 => {:two_for_one, :lumber},
+    }
+  end
+
 
   # TODO: random_tokens, but it would require that red tokens (8, 6) never be next to each other, so it's a little more difficult
   # TODO: then Board.random_full or something

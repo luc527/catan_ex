@@ -15,6 +15,8 @@ defmodule Catan.Model.T do
   @type dice_roll() :: 2..12
   @type token()     :: 2|3|4|5|6|8|9|10|11|12
 
+  @type harbor() :: :three_for_one | {:two_to_one, resource()}
+
   @type color() :: :red | :blue | :orange | :white
 
   @type building_kind() :: :settlement | :city
