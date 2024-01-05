@@ -24,7 +24,7 @@ defmodule Catan.Model.T do
 
   @type victory_point_card() :: :library | :market | :chapel | :great_hall | :university
   @type progress_card()      :: :monopoly | :year_of_plenty | :road_building
-  @type development_card()   :: victory_point_card() | progress_card() | :knight_card
+  @type development_card()   :: victory_point_card() | progress_card() | :knight
 
   @type piece() :: :settlement | :city | :road
 
@@ -69,7 +69,7 @@ defmodule Catan.Model.T do
 
   @spec development_cards() :: [T.development_card()]
   def development_cards() do
-    [:knight_card | (victory_point_cards() ++ progress_cards())]
+    [:knight | (victory_point_cards() ++ progress_cards())]
   end
 
   @spec resources() :: [T.resource()]
