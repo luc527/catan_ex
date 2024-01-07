@@ -5,7 +5,7 @@ defmodule Catan.Model.T do
 
   @type result(type) :: {:ok, result :: type} | {:error, reason :: any()}
 
-  @type path()   :: 1..72
+  @type side()   :: 1..72
   @type corner() :: 1..54
   @type tile()   :: 1..19
 
@@ -47,8 +47,8 @@ defmodule Catan.Model.T do
   @spec corners() :: T.corner()
   def corners(), do: 1..54
 
-  @spec paths() :: T.path()
-  def paths(), do: 1..72
+  @spec sides() :: T.side()
+  def sides(), do: 1..72
 
   @spec colors() :: [T.color()]
   def colors(), do: [:red, :blue, :orange, :white]

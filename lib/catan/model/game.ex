@@ -5,6 +5,7 @@ defmodule Catan.Model.Game do
   alias Catan.Model.Player
   alias Catan.Model.Board
   alias Catan.Model.T
+  alias Catan.Model.RoadGraph
 
   defstruct [
     :board,
@@ -13,17 +14,19 @@ defmodule Catan.Model.Game do
     :buildings,
     :roads,
 
-    :players,
     :state,
+    :players,
     :dice_roll,
     :robber_tile,
-    :development_card_stack,
+    :largest_army_holder,
+    :longest_road_holder,
 
     # You cannot use a development card in the same turn you bought it.
     # To ensure this, when a player buys a card, the card is first inserted into this list,
     # and only when the turn is ended that the card is added to the player structure,
     # so it's available to use in the next turn.
     :new_development_cards,
+    :development_card_stack,
   ]
 
   @type t() :: %__MODULE__ {
@@ -31,19 +34,19 @@ defmodule Catan.Model.Game do
     player_order: [T.color()],
 
     buildings: %{T.corner() => T.building()},
-    roads:     %{T.path() => T.color()},
+    roads:     %{T.side() => T.color()},
 
-    players:                %{T.color() => %Player{}},
-    state:                  T.game_state(),
-    dice_roll:              T.dice_roll()|nil,
-    robber_tile:            T.tile(),
-    development_card_stack: [T.development_card()],
+    players:     %{T.color() => %Player{}},
+    state:       T.game_state(),
+    dice_roll:   T.dice_roll()|nil,
+    robber_tile: T.tile(),
+
+    largest_army_holder: T.color() | nil,
+    longest_road_holder: T.color() | nil,
+
     new_development_cards:  [T.development_card()],
+    development_card_stack: [T.development_card()],
   }
-
-  defp as_result(game) do
-    {:ok, game}
-  end
 
   defp resduce(game, enum, fun) do
     # Reduce that works better with |> for games,
@@ -59,22 +62,22 @@ defmodule Catan.Model.Game do
   @spec beginner_game([T.color()]) :: T.result(Game.t())
   def beginner_game(players) do
     with {:ok, game} <- initial_game(players, Board.beginner_board()),
-         {:ok, game} <- place_roads_arbitraty(game, beginner_game_roads_for(players)),
-         {:ok, game} <- place_settlements_arbitraty(game, beginner_game_settlements_for(players))
+         {:ok, game} <- place_roads_arbitrary(game, beginner_game_roads_for(players)),
+         {:ok, game} <- place_settlements_arbitrary(game, beginner_game_settlements_for(players))
     do
       resources =
         beginner_game_producing_settlements_for(players)
-        |> Stream.flat_map(fn {corner, player} ->
+        |> Enum.flat_map(fn {corner, player} ->
           Graphs.corner_tiles[corner]
-          |> Stream.map(fn tile ->
+          |> Enum.map(fn tile ->
             resource = T.terrain_resource(game.board.terrains[tile])
             {player, resource, 1}
           end)
         end)
-      game
-      |> distribute_resources(resources)
-      |> ongoing_start_turn(players)
-      |> as_result()
+      {:ok,
+        game
+        |> distribute_resources(resources)
+        |> ongoing_start_turn(players)}
     end
   end
 
@@ -93,15 +96,15 @@ defmodule Catan.Model.Game do
   def initial_game([_|_] = player_order, %Board{} = board) do
     cond do
       length(player_order) != length(Enum.uniq(player_order)) ->
-        {:error, :repeated_players}
+        {:error, :repeated_player}
 
       Enum.any?(player_order, &(&1 not in T.colors())) ->
-        {:error, :invalid_players}
+        {:error, :invalid_player}
 
       true ->
-        [{robber_tile, _}] =
+        {robber_tile, _} =
           board.terrains
-          |> Enum.filter(fn {_tile, terrain} -> terrain == :desert end)
+          |> Enum.find(fn {_tile, terrain} -> terrain == :desert end)
         {:ok, %Game{
           state: {:foundation, 1, player_order},
           board: board,
@@ -111,27 +114,29 @@ defmodule Catan.Model.Game do
           roads: %{},
           dice_roll: nil,
           robber_tile: robber_tile,
-          development_card_stack: shuffled_development_cards(),
+          largest_army_holder: nil,
+          longest_road_holder: nil,
           new_development_cards: [],
+          development_card_stack: shuffled_development_cards(),
         }}
     end
   end
 
-  @spec place_roads_arbitraty(Game.t(), [{T.path(), T.color()}]) :: T.result(Game.t())
-  defp place_roads_arbitraty(game, roads) do
-    resduce(game, roads, fn {path, color}, game ->
-      place_road_arbitraty(game, color, path)
+  @spec place_roads_arbitrary(Game.t(), [{T.side(), T.color()}]) :: T.result(Game.t())
+  defp place_roads_arbitrary(game, roads) do
+    resduce(game, roads, fn {side, color}, game ->
+      place_road_arbitrary(game, color, side)
     end)
   end
 
-  @spec place_settlements_arbitraty(Game.t(), [{T.corner(), T.color()}]) :: T.result(Game.t())
-  defp place_settlements_arbitraty(game, settlements) do
+  @spec place_settlements_arbitrary(Game.t(), [{T.corner(), T.color()}]) :: T.result(Game.t())
+  defp place_settlements_arbitrary(game, settlements) do
     resduce(game, settlements, fn {corner, color}, game ->
-      place_settlement_arbitraty(game, color, corner)
+      place_settlement_arbitrary(game, color, corner)
     end)
   end
 
-  @spec beginner_game_roads() :: [{T.path(), T.color()}]
+  @spec beginner_game_roads() :: [{T.side(), T.color()}]
   def beginner_game_roads() do
     [
       {14, :red},
@@ -145,7 +150,7 @@ defmodule Catan.Model.Game do
     ]
   end
 
-  @spec beginner_game_roads_for([T.color()]) :: [{T.path(), T.color()}]
+  @spec beginner_game_roads_for([T.color()]) :: [{T.side(), T.color()}]
   defp beginner_game_roads_for(players) do
     beginner_game_roads()
     |> Enum.filter(fn {_, player} -> player in players end)
@@ -165,7 +170,7 @@ defmodule Catan.Model.Game do
     ]
   end
 
-  @spec beginner_game_settlements_for([T.color()]) :: [{T.path(), T.color()}]
+  @spec beginner_game_settlements_for([T.color()]) :: [{T.side(), T.color()}]
   defp beginner_game_settlements_for(players) do
     beginner_game_settlements()
     |> Enum.filter(fn {_, player} -> player in players end)
@@ -181,12 +186,11 @@ defmodule Catan.Model.Game do
     ]
   end
 
-  @spec beginner_game_producing_settlements_for([T.color()]) :: [{T.path(), T.color()}]
+  @spec beginner_game_producing_settlements_for([T.color()]) :: [{T.side(), T.color()}]
   defp beginner_game_producing_settlements_for(players) do
     beginner_game_producing_settlements()
     |> Enum.filter(fn {_, player} -> player in players end)
   end
-
 
   @spec update_player_piece(Game.t(), T.color(), T.piece(), integer()) :: T.result(Game.t())
   defp update_player_piece(game, player, piece, amount) do
@@ -195,24 +199,24 @@ defmodule Catan.Model.Game do
 
   @spec corner_adjacent_roads(Game.t(), T.corner()) :: [T.color()]
   defp corner_adjacent_roads(game, corner) do
-    Graphs.corner_paths[corner]
-    |> Enum.flat_map(fn {path, _} ->
-      case game.roads[path] do
+    Graphs.corner_sides[corner]
+    |> Enum.flat_map(fn {side, _destination} ->
+      case game.roads[side] do
         nil -> []
         color -> [color]
       end
     end)
   end
 
-  @spec path_adjacent_roads(Game.t(), T.path()) :: [T.color()]
-  defp path_adjacent_roads(game, path) do
-    Graphs.path_corners[path]
-    |> Enum.flat_map(fn corner -> Graphs.corner_paths[corner] end)
-    |> Enum.flat_map(fn {other_path, _} ->
-      if other_path == path do
+  @spec side_adjacent_roads(Game.t(), T.side()) :: [T.color()]
+  defp side_adjacent_roads(game, side) do
+    Graphs.side_corners[side]
+    |> Enum.flat_map(fn corner -> Graphs.corner_sides[corner] end)
+    |> Enum.flat_map(fn {other_side, _} ->
+      if other_side == side do
         []
       else
-        case game.roads[other_path] do
+        case game.roads[other_side] do
           nil -> []
           road -> [road]
         end
@@ -220,9 +224,9 @@ defmodule Catan.Model.Game do
     end)
   end
 
-  @spec adjacent_buildings(Game.t(), T.corner()) :: [T.building()]
-  defp adjacent_buildings(game, corner) do
-    Graphs.corner_paths[corner]
+  @spec corner_adjacent_buildings(Game.t(), T.corner()) :: [T.building()]
+  defp corner_adjacent_buildings(game, corner) do
+    Graphs.corner_sides[corner]
     |> Enum.flat_map(fn {_, other_corner} ->
       case game.buildings[other_corner] do
         nil -> []
@@ -231,12 +235,12 @@ defmodule Catan.Model.Game do
     end)
   end
 
-  @spec place_settlement_arbitraty(Game.t(), T.color(), T.corner()) :: T.result(Game.t())
-  defp place_settlement_arbitraty(game, player, corner) do
+  @spec place_settlement_arbitrary(Game.t(), T.color(), T.corner()) :: T.result(Game.t())
+  defp place_settlement_arbitrary(game, player, corner) do
     cond do
       game.buildings[corner] ->
         {:error, :occupied}
-      adjacent_buildings(game, corner) != [] ->
+      corner_adjacent_buildings(game, corner) != [] ->
         {:error, :adjacent_building}
       true ->
         with {:ok, game} <- update_player_piece(game, player, :settlement, -1) do
@@ -245,13 +249,13 @@ defmodule Catan.Model.Game do
     end
   end
 
-  @spec place_road_arbitraty(Game.t(), T.color(), T.path()) :: T.result(Game.t())
-  defp place_road_arbitraty(game, player, path) do
-    if game.roads[path] do
+  @spec place_road_arbitrary(Game.t(), T.color(), T.side()) :: T.result(Game.t())
+  defp place_road_arbitrary(game, player, side) do
+    if game.roads[side] do
       {:error, :occupied}
     else
       with {:ok, game} <- update_player_piece(game, player, :road, -1) do
-        {:ok, put_in(game.roads[path], player)}
+        {:ok, put_in(game.roads[side], player)}
       end
     end
   end
@@ -265,14 +269,6 @@ defmodule Catan.Model.Game do
   defp update_player_resources(game, player, resources) do
     resduce(game, resources, fn {resource, amount}, game ->
       update_player_resource(game, player, resource, amount)
-    end)
-  end
-
-  @spec consolidate_new_development_cards(Game.t()) :: T.result(Game.t())
-  defp consolidate_new_development_cards(%Game{state: {:ongoing, _, [player|_]}} = game) do
-    {cards, game} = get_and_update_in(game.new_development_cards, &{&1, []})
-    resduce(game, cards, fn card, game ->
-      T.update_nonnegative(game.players[player].development_cards[card], 1)
     end)
   end
 
@@ -293,10 +289,10 @@ defmodule Catan.Model.Game do
   defp tile_resource_production(game, tile) do
     resource = T.terrain_resource(game.board.terrains[tile])
     Graphs.tile_corners[tile]
-    |> Stream.flat_map(fn corner ->
+    |> Enum.flat_map(fn corner ->
       building = game.buildings[corner]
       case building do
-        nil            -> []
+        nil -> []
         {kind, player} -> [{player, resource, T.building_weight(kind)}]
       end
     end)
@@ -311,44 +307,123 @@ defmodule Catan.Model.Game do
     game
   end
 
-
-  @spec finish_turn(Game.t()) :: T.result(Game.t())
+  @spec finish_turn(Game.t()) :: Game.t()
 
   defp finish_turn(%Game{state: {:foundation, 1, [_last]}, player_order: player_order} = game) do
-    {:ok, %{game | state: {:foundation, 2, Enum.reverse(player_order)}}}
+    %{game | state: {:foundation, 2, Enum.reverse(player_order)}}
   end
 
   defp finish_turn(%Game{state: {:foundation, 1, [_|rest]}} = game) do
-    {:ok, %{game | state: {:foundation, 1, rest}}}
+    %{game | state: {:foundation, 1, rest}}
   end
 
   defp finish_turn(%Game{state: {:foundation, 2, [_last]}, player_order: player_order} = game) do
-    {:ok, ongoing_start_turn(game, player_order)}
+    ongoing_start_turn(game, player_order)
   end
 
   defp finish_turn(%Game{state: {:foundation, 2, [_ | rest]}} = game) do
-    {:ok, %{game | state: {:foundation, 2, rest}}}
+    %{game | state: {:foundation, 2, rest}}
   end
 
   defp finish_turn(%Game{state: {:ongoing, stage, [prev_player | next_players]}} = game)
   when stage == :trading or stage == :building
   do
-    with {:ok, game} = consolidate_new_development_cards(game) do
-      # TODO:
-      # - update special card holders
-      # - update victory points
-      # - check for winner
-      # if no winner, then start a new turn like below
-      {:ok, ongoing_start_turn(game, next_players ++ [prev_player])}
+    # Update special card holders
+
+    army_size_threshold =
+      case game.largest_army_holder do
+        nil -> 3
+        player -> game.players[player].used_knight_cards + 1
+      end
+
+    largest_army_holder =
+      game.players
+      |> Enum.filter(fn {_, player} -> player.used_knight_cards >= army_size_threshold end)
+      |> Enum.max_by(fn {_, player} -> player.used_knight_cards end, fn -> nil end)
+      |> case do
+        nil -> game.largest_army_holder
+        {color, _} -> color
+      end
+
+    longest_road_per_player =
+      for color <- game.player_order, into: %{} do
+        {color, RoadGraph.longest_road_length(game, color)}
+      end
+
+    road_length_threshold =
+      case game.longest_road_holder do
+        nil -> 5
+        player -> longest_road_per_player[player] + 1
+      end
+
+    longest_road_holder =
+      longest_road_per_player
+      |> Enum.filter(fn {_player, length} -> length >= road_length_threshold end)
+      |> Enum.max_by(fn {_player, length} -> length end, fn -> nil end)
+      |> case do
+        nil -> game.longest_road_holder
+        {player, _length} -> player
+      end
+
+    game = %{game |
+      largest_army_holder: largest_army_holder,
+      longest_road_holder: longest_road_holder,
+    }
+
+    # Consolidate development cards that were bought in this turn
+
+    game =
+      Enum.reduce(game.new_development_cards, game, fn card, game ->
+        update_in(game.players[prev_player].development_cards[card], &(&1 = 1))
+      end)
+    game = %{game | new_development_cards: []}
+
+    # Update victory points
+
+    game =
+      Enum.reduce(game.player_order, game, fn color, game ->
+        put_in(game.players[color].victory_points, victory_points(game, color))
+      end)
+
+    # Check for winner
+
+    game.players
+    |> Enum.find(fn {_color, player} -> player.victory_points >= 10 end)
+    |> case do
+      nil ->
+        ongoing_start_turn(game, next_players ++ [prev_player])
+      {winner, _} ->
+        %{game | state: {:won_by, winner}}
     end
   end
 
-  @spec end_turn(Game.t()) :: T.result(Game.t())
+  @spec end_turn(Game.t()) :: Game.t()
   def end_turn(%Game{state: {:ongoing, stage, _}} = game)
-  when stage == :trading or stage == :building
-  do
-    # Because finish_turn is private
+  when stage == :trading or stage == :building do
+    # Just because finish_turn is private
     finish_turn(game)
+  end
+
+  @spec victory_points(Game.t(), T.color()) :: integer()
+  defp victory_points(game, player) do
+    buildings_vp =
+      game.buildings
+      |> Enum.filter(fn
+        {_corner, nil} -> false
+        {_corner, {_kind, color}} -> color == player
+      end)
+      |> Enum.map(fn {_corner, {kind, _color}} -> T.building_weight(kind) end)
+      |> Enum.sum()
+
+    development_cards_vp =
+      game.players[player].development_cards
+      |> Enum.map(&T.card_victory_points/1)
+      |> Enum.sum()
+
+    buildings_vp +
+    development_cards_vp +
+    (if game.largest_army_holder == player, do: 2, else: 0) +
+    (if game.longest_road_holder == player, do: 2, else: 0)
   end
 
   @spec ongoing_start_turn(Game.t(), [T.color()]) :: Game.t()
@@ -372,7 +447,7 @@ defmodule Catan.Model.Game do
       _ ->
         resources =
           affected_tiles(game, roll)
-          |> Stream.flat_map(&tile_resource_production(game, &1))
+          |> Enum.flat_map(&tile_resource_production(game, &1))
         game = distribute_resources(game, resources)
         %{game |
           state: {:ongoing, :trading, player_queue},
@@ -381,23 +456,22 @@ defmodule Catan.Model.Game do
       end
   end
 
-
-  @spec place_starting_pieces(Game.t(), T.corner(), T.path()) :: T.result(Game.t())
+  @spec place_starting_pieces(Game.t(), T.corner(), T.side()) :: T.result(Game.t())
 
   def place_starting_pieces(
     %Game{state: {:foundation, 1, [player|_]}} = game,
-    settlement_corner, road_path
+    settlement_corner, road_side
   ) do
-    with {:ok, game} <- add_starting_pieces(game, player, settlement_corner, road_path) do
-      finish_turn(game)
+    with {:ok, game} <- add_starting_pieces(game, player, settlement_corner, road_side) do
+      {:ok, finish_turn(game)}
     end
   end
 
   def place_starting_pieces(
     %Game{state: {:foundation, 2, [player|_]}} = game,
-    settlement_corner, road_path
+    settlement_corner, road_side
   ) do
-    with {:ok, game} <- add_starting_pieces(game, player, settlement_corner, road_path),
+    with {:ok, game} <- add_starting_pieces(game, player, settlement_corner, road_side),
          resources =
           Graphs.corner_tiles[settlement_corner]
           |> Stream.map(fn tile ->
@@ -406,21 +480,20 @@ defmodule Catan.Model.Game do
           end),
          {:ok, game} <- update_player_resources(game, player, resources)
     do
-      finish_turn(game)
+      {:ok, finish_turn(game)}
     end
   end
 
-
-  @spec add_starting_pieces(Game.t(), T.color(), T.corner(), T.path()) :: T.result(Game.t())
-  defp add_starting_pieces(game, player, corner, path) do
-    adjacent_paths =
-      Graphs.corner_paths[corner]
+  @spec add_starting_pieces(Game.t(), T.color(), T.corner(), T.side()) :: T.result(Game.t())
+  defp add_starting_pieces(game, player, corner, side) do
+    adjacent_sides =
+      Graphs.corner_sides[corner]
       |> Enum.map(&elem(&1, 0))
-    if path not in adjacent_paths do
-      {:error, :path_not_adjacent}
+    if side not in adjacent_sides do
+      {:error, :side_not_adjacent}
     else
-      with {:ok, game} <- place_road_arbitraty(game, player, path),
-           {:ok, game} <- place_settlement_arbitraty(game, player, corner)
+      with {:ok, game} <- place_road_arbitrary(game, player, side),
+           {:ok, game} <- place_settlement_arbitrary(game, player, corner)
       do
         {:ok, game}
       end
@@ -441,7 +514,6 @@ defmodule Catan.Model.Game do
       ])
     end
   end
-
 
   @spec trade_with_bank(Game.t(), T.resource(), integer(), T.resource()) :: T.result(Game.t())
 
@@ -509,13 +581,11 @@ defmodule Catan.Model.Game do
     {:error, :invalid_state}
   end
 
-
   @spec negate_resources([{T.resource(), integer()}]) :: [{T.resource(), integer()}]
   defp negate_resources(resources) do
     resources
     |> Enum.map(fn {res, amt} -> {res, -amt} end)
   end
-
 
   @spec transfer_resources(Game.t(), T.color(), T.color(), [{T.resource(), integer()}]) :: T.result(Game.t())
   defp transfer_resources(game, from_player, to_player, resources) do
@@ -639,22 +709,22 @@ defmodule Catan.Model.Game do
     end
   end
 
-  @spec build_road(Game.t(), T.path()) :: T.result(Game.t())
-  def build_road(
-    %Game{state: {:ongoing, :building, [player|_]}} = game,
-    path
-  ) do
-    with {:ok, game} = place_road_adjacent(game, player, path) do
-      update_player_resources(game, player, T.cost(:road))
+  @spec place_road_adjacent(Game.t(), T.color(), T.side()) :: T.result(Game.t())
+  defp place_road_adjacent(game, player, side) do
+    if player not in side_adjacent_roads(game, side) do
+      {:error, :no_adjacent_roads}
+    else
+      place_road_arbitrary(game, player, side)
     end
   end
 
-  @spec place_road_adjacent(Game.t(), T.color(), T.path()) :: T.result(Game.t())
-  defp place_road_adjacent(game, player, path) do
-    if player not in path_adjacent_roads(game, path) do
-      {:error, :no_adjacent_roads}
-    else
-      place_road_arbitraty(game, player, path)
+  @spec build_road(Game.t(), T.side()) :: T.result(Game.t())
+  def build_road(
+    %Game{state: {:ongoing, :building, [player|_]}} = game,
+    side
+  ) do
+    with {:ok, game} = place_road_adjacent(game, player, side) do
+      update_player_resources(game, player, T.cost(:road))
     end
   end
 
@@ -663,7 +733,7 @@ defmodule Catan.Model.Game do
     if player not in corner_adjacent_roads(game, corner) do
       {:error, :no_adjacent_roads}
     else
-      place_settlement_arbitraty(game, player, corner)
+      place_settlement_arbitrary(game, player, corner)
     end
   end
 
@@ -725,8 +795,8 @@ defmodule Catan.Model.Game do
   defguard allows_development_card(stage)
   when stage in [:trading, :building, :moving_robber]
 
-  @spec subtract_development_card(Game.t(), T.color(), T.development_card()) :: T.result(Game.t())
-  defp subtract_development_card(game, player, card) do
+  @spec remove_development_card(Game.t(), T.color(), T.development_card()) :: T.result(Game.t())
+  defp remove_development_card(game, player, card) do
     T.update_nonnegative(game.players[player].development_cards[card], -1)
   end
 
@@ -735,9 +805,8 @@ defmodule Catan.Model.Game do
     %Game{state: {:ongoing, stage, [player|_]}} = game,
     robber_tile, player_to_steal
   ) when allows_development_card(stage) do
-    # TODO player still needs the knight card
-    # so instead of subtracting, store it in a separate used_knight_cards field
     with {:ok, game} <- T.update_nonnegative(game.players[player].development_cards[:knight], -1) do
+      game = update_in(game.players[player].used_knight_cards, &(&1 + 1))
       _move_robber(game, robber_tile, player_to_steal)
     end
   end
@@ -747,7 +816,7 @@ defmodule Catan.Model.Game do
     %Game{state: {:ongoing, stage, [thief|_]}} = game,
     resource
   ) when allows_development_card(stage) do
-    with {:ok, game} <- subtract_development_card(game, thief, :monopoly) do
+    with {:ok, game} <- remove_development_card(game, thief, :monopoly) do
       total =
         game.players
         |> Enum.map(fn {_, player} -> player.resources[resource] end)
@@ -760,25 +829,25 @@ defmodule Catan.Model.Game do
     end
   end
 
-  @spec use_road_building_card(Game.t(), T.path(), T.path()) :: T.result(Game.t())
+  @spec use_road_building_card(Game.t(), T.side(), T.side()) :: T.result(Game.t())
   def use_road_building_card(
     %Game{state: {:ongoing, stage, [player|_]}} = game,
-    path1, path2
+    side1, side2
   ) when allows_development_card(stage) do
-    with {:ok, game} <- subtract_development_card(game, player, :road_building) do
-      # HACK: Currently we can't just place path1 then path2, because while path2 may
-      # be adjacent to some road, path1 may be adjacent only to path2 which doesn't exist yet,
+    with {:ok, game} <- remove_development_card(game, player, :road_building) do
+      # HACK: Currently we can't _just_ place side1 then side2, because while side2 may
+      # be adjacent to some road, side1 may be adjacent only to side2 which doesn't exist yet,
       # so it fails. To bypass this, we attempt to put the roads in one order then the other.
 
       attempt =
-        with {:ok, game} <- place_road_adjacent(game, player, path1) do
-          place_road_adjacent(game, player, path2)
+        with {:ok, game} <- place_road_adjacent(game, player, side1) do
+          place_road_adjacent(game, player, side2)
         end
 
       case attempt do
         {:error, :no_adjacent_roads} ->
-          with {:ok, game} <- place_road_adjacent(game, player, path2) do
-            place_road_adjacent(game, player, path1)
+          with {:ok, game} <- place_road_adjacent(game, player, side2) do
+            place_road_adjacent(game, player, side1)
           end
         result ->
           result
@@ -791,7 +860,7 @@ defmodule Catan.Model.Game do
     %Game{state: {:ongoing, stage, [player|_]}} = game,
     resource1, resource2
   ) when allows_development_card(stage) do
-    with {:ok, game} <- subtract_development_card(game, player, :year_of_plenty) do
+    with {:ok, game} <- remove_development_card(game, player, :year_of_plenty) do
       update_player_resources(game, player, [{resource1, 1}, {resource2, 1}])
     end
   end

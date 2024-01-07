@@ -2,8 +2,8 @@ defmodule Catan.Model.Graphs do
   alias Catan.Model.Graphs
   alias Catan.Model.T
 
-  @spec corner_paths() :: %{T.corner() => [{T.path(), T.corner()}]}
-  def corner_paths() do
+  @spec corner_sides() :: %{T.corner() => [{T.side(), T.corner()}]}
+  def corner_sides() do
     %{
       1 => [{1, 4}, {2, 5}],
       2 => [{3, 5}, {4, 6}],
@@ -158,7 +158,7 @@ defmodule Catan.Model.Graphs do
     }
   end
 
-  def path_corners() do
+  def side_corners() do
     %{
       1 => [4, 1],
       2 => [5, 1],
@@ -235,9 +235,9 @@ defmodule Catan.Model.Graphs do
     }
   end
 
-  def make_path_corners() do
-    for {corner, edges} <- Graphs.corner_paths, {path, _} <- edges do
-      {corner, path}
+  def make_side_corners() do
+    for {corner, edges} <- Graphs.corner_sides, {side, _} <- edges do
+      {corner, side}
     end
     |> Enum.uniq()
     |> Enum.group_by(&elem(&1, 1), &elem(&1, 0))

@@ -7,6 +7,7 @@ defmodule Catan.Model.Player do
     :development_cards,
     :pieces,
     :victory_points,
+    :used_knight_cards,
   ]
 
   @type t() :: %__MODULE__{
@@ -14,6 +15,7 @@ defmodule Catan.Model.Player do
     development_cards:   %{T.development_card() => integer()},
     pieces:              %{T.piece() => integer()},
     victory_points:      integer(),
+    used_knight_cards:   integer(),
   }
 
   def initial() do
@@ -26,6 +28,7 @@ defmodule Catan.Model.Player do
         city: 4,
       },
       victory_points: 0,
+      used_knight_cards: 0,
     }
   end
 
