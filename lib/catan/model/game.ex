@@ -59,25 +59,124 @@ defmodule Catan.Model.Game do
     end)
   end
 
-  @spec beginner_game([T.color()]) :: T.result(Game.t())
-  def beginner_game(players) do
-    with {:ok, game} <- initial_game(players, Board.beginner_board()),
-         {:ok, game} <- place_roads_arbitrary(game, beginner_game_roads_for(players)),
-         {:ok, game} <- place_settlements_arbitrary(game, beginner_game_settlements_for(players))
-    do
-      resources =
-        beginner_game_producing_settlements_for(players)
-        |> Enum.flat_map(fn {corner, player} ->
-          Graphs.corner_tiles[corner]
-          |> Enum.map(fn tile ->
-            resource = T.terrain_resource(game.board.terrains[tile])
-            {player, resource, 1}
-          end)
-        end)
-      {:ok,
-        game
-        |> distribute_resources(resources)
-        |> ongoing_start_turn(players)}
+  @spec update_player_piece(Game.t(), T.color(), T.piece(), integer()) :: T.result(Game.t())
+  defp update_player_piece(game, player, piece, amount) do
+    T.update_nonnegative(game.players[player].pieces[piece], amount)
+  end
+
+  @spec update_player_resource(Game.t(), T.color(), T.resource(), integer()) :: T.result(Game.t())
+  defp update_player_resource(game, player, resource, amount) do
+    T.update_nonnegative(game.players[player].resources[resource], amount)
+  end
+
+  @spec update_player_resources(Game.t(), T.color(), [{T.resource(), integer()}]) :: T.result(Game.t())
+  defp update_player_resources(game, player, resources) do
+    resduce(game, resources, fn {resource, amount}, game ->
+      update_player_resource(game, player, resource, amount)
+    end)
+  end
+
+  @spec distribute_resources(Game.t(), [{T.color(), T.resource(), integer()}]) :: Game.t()
+  defp distribute_resources(game, resources) do
+    {:ok, game} =
+      resduce(game, resources, fn {player, resource, amount}, game ->
+        update_player_resource(game, player, resource, amount)
+      end)
+    game
+  end
+
+  @spec corner_adjacent_buildings(Game.t(), T.corner()) :: [T.building()]
+  defp corner_adjacent_buildings(game, corner) do
+    Graphs.corner_sides[corner]
+    |> Enum.flat_map(fn {_, other_corner} ->
+      case game.buildings[other_corner] do
+        nil -> []
+        building -> [building]
+      end
+    end)
+  end
+
+  @spec place_settlement_arbitrary(Game.t(), T.color(), T.corner()) :: T.result(Game.t())
+  defp place_settlement_arbitrary(game, player, corner) do
+    cond do
+      game.buildings[corner] ->
+        {:error, :occupied}
+      corner_adjacent_buildings(game, corner) != [] ->
+        {:error, :adjacent_building}
+      true ->
+        with {:ok, game} <- update_player_piece(game, player, :settlement, -1) do
+          {:ok, put_in(game.buildings[corner], {:settlement, player})}
+        end
+    end
+  end
+
+  @spec place_road_arbitrary(Game.t(), T.color(), T.side()) :: T.result(Game.t())
+  defp place_road_arbitrary(game, player, side) do
+    if game.roads[side] do
+      {:error, :occupied}
+    else
+      with {:ok, game} <- update_player_piece(game, player, :road, -1) do
+        {:ok, put_in(game.roads[side], player)}
+      end
+    end
+  end
+
+  @spec place_roads_arbitrary(Game.t(), [{T.side(), T.color()}]) :: T.result(Game.t())
+  defp place_roads_arbitrary(game, roads) do
+    resduce(game, roads, fn {side, color}, game ->
+      place_road_arbitrary(game, color, side)
+    end)
+  end
+
+  @spec place_settlements_arbitrary(Game.t(), [{T.corner(), T.color()}]) :: T.result(Game.t())
+  defp place_settlements_arbitrary(game, settlements) do
+    resduce(game, settlements, fn {corner, color}, game ->
+      place_settlement_arbitrary(game, color, corner)
+    end)
+  end
+
+  @spec side_adjacent_roads(Game.t(), T.side()) :: [T.color()]
+  defp side_adjacent_roads(game, side) do
+    Graphs.side_corners[side]
+    |> Enum.flat_map(fn corner -> Graphs.corner_sides[corner] end)
+    |> Enum.flat_map(fn {other_side, _} ->
+      if other_side == side do
+        []
+      else
+        case game.roads[other_side] do
+          nil -> []
+          road -> [road]
+        end
+      end
+    end)
+  end
+
+  @spec place_road_adjacent(Game.t(), T.color(), T.side()) :: T.result(Game.t())
+  defp place_road_adjacent(game, player, side) do
+    if player not in side_adjacent_roads(game, side) do
+      {:error, :no_adjacent_roads}
+    else
+      place_road_arbitrary(game, player, side)
+    end
+  end
+
+  @spec corner_adjacent_roads(Game.t(), T.corner()) :: [T.color()]
+  defp corner_adjacent_roads(game, corner) do
+    Graphs.corner_sides[corner]
+    |> Enum.flat_map(fn {side, _destination} ->
+      case game.roads[side] do
+        nil -> []
+        color -> [color]
+      end
+    end)
+  end
+
+  @spec place_settlement_adjacent(Game.t(), T.color(), T.corner()) :: T.result(Game.t())
+  defp place_settlement_adjacent(game, player, corner) do
+    if player not in corner_adjacent_roads(game, corner) do
+      {:error, :no_adjacent_roads}
+    else
+      place_settlement_arbitrary(game, player, corner)
     end
   end
 
@@ -91,6 +190,7 @@ defmodule Catan.Model.Game do
       ])
     )
   end
+
 
   @spec initial_game([T.color()], Board.t()) :: T.result(Game.t())
   def initial_game([_|_] = player_order, %Board{} = board) do
@@ -122,18 +222,26 @@ defmodule Catan.Model.Game do
     end
   end
 
-  @spec place_roads_arbitrary(Game.t(), [{T.side(), T.color()}]) :: T.result(Game.t())
-  defp place_roads_arbitrary(game, roads) do
-    resduce(game, roads, fn {side, color}, game ->
-      place_road_arbitrary(game, color, side)
-    end)
-  end
-
-  @spec place_settlements_arbitrary(Game.t(), [{T.corner(), T.color()}]) :: T.result(Game.t())
-  defp place_settlements_arbitrary(game, settlements) do
-    resduce(game, settlements, fn {corner, color}, game ->
-      place_settlement_arbitrary(game, color, corner)
-    end)
+  @spec beginner_game([T.color()]) :: T.result(Game.t())
+  def beginner_game(players) do
+    with {:ok, game} <- initial_game(players, Board.beginner_board()),
+         {:ok, game} <- place_roads_arbitrary(game, beginner_game_roads_for(players)),
+         {:ok, game} <- place_settlements_arbitrary(game, beginner_game_settlements_for(players))
+    do
+      resources =
+        beginner_game_producing_settlements_for(players)
+        |> Enum.flat_map(fn {corner, player} ->
+          Graphs.corner_tiles[corner]
+          |> Enum.map(fn tile ->
+            resource = T.terrain_resource(game.board.terrains[tile])
+            {player, resource, 1}
+          end)
+        end)
+      {:ok,
+        game
+        |> distribute_resources(resources)
+        |> ongoing_start_turn(players)}
+    end
   end
 
   @spec beginner_game_roads() :: [{T.side(), T.color()}]
@@ -192,119 +300,26 @@ defmodule Catan.Model.Game do
     |> Enum.filter(fn {_, player} -> player in players end)
   end
 
-  @spec update_player_piece(Game.t(), T.color(), T.piece(), integer()) :: T.result(Game.t())
-  defp update_player_piece(game, player, piece, amount) do
-    T.update_nonnegative(game.players[player].pieces[piece], amount)
-  end
-
-  @spec corner_adjacent_roads(Game.t(), T.corner()) :: [T.color()]
-  defp corner_adjacent_roads(game, corner) do
-    Graphs.corner_sides[corner]
-    |> Enum.flat_map(fn {side, _destination} ->
-      case game.roads[side] do
-        nil -> []
-        color -> [color]
-      end
-    end)
-  end
-
-  @spec side_adjacent_roads(Game.t(), T.side()) :: [T.color()]
-  defp side_adjacent_roads(game, side) do
-    Graphs.side_corners[side]
-    |> Enum.flat_map(fn corner -> Graphs.corner_sides[corner] end)
-    |> Enum.flat_map(fn {other_side, _} ->
-      if other_side == side do
-        []
-      else
-        case game.roads[other_side] do
-          nil -> []
-          road -> [road]
-        end
-      end
-    end)
-  end
-
-  @spec corner_adjacent_buildings(Game.t(), T.corner()) :: [T.building()]
-  defp corner_adjacent_buildings(game, corner) do
-    Graphs.corner_sides[corner]
-    |> Enum.flat_map(fn {_, other_corner} ->
-      case game.buildings[other_corner] do
-        nil -> []
-        building -> [building]
-      end
-    end)
-  end
-
-  @spec place_settlement_arbitrary(Game.t(), T.color(), T.corner()) :: T.result(Game.t())
-  defp place_settlement_arbitrary(game, player, corner) do
-    cond do
-      game.buildings[corner] ->
-        {:error, :occupied}
-      corner_adjacent_buildings(game, corner) != [] ->
-        {:error, :adjacent_building}
-      true ->
-        with {:ok, game} <- update_player_piece(game, player, :settlement, -1) do
-          {:ok, put_in(game.buildings[corner], {:settlement, player})}
-        end
-    end
-  end
-
-  @spec place_road_arbitrary(Game.t(), T.color(), T.side()) :: T.result(Game.t())
-  defp place_road_arbitrary(game, player, side) do
-    if game.roads[side] do
-      {:error, :occupied}
-    else
-      with {:ok, game} <- update_player_piece(game, player, :road, -1) do
-        {:ok, put_in(game.roads[side], player)}
-      end
-    end
-  end
-
-  @spec update_player_resource(Game.t(), T.color(), T.resource(), integer()) :: T.result(Game.t())
-  defp update_player_resource(game, player, resource, amount) do
-    T.update_nonnegative(game.players[player].resources[resource], amount)
-  end
-
-  @spec update_player_resources(Game.t(), T.color(), [{T.resource(), integer()}]) :: T.result(Game.t())
-  defp update_player_resources(game, player, resources) do
-    resduce(game, resources, fn {resource, amount}, game ->
-      update_player_resource(game, player, resource, amount)
-    end)
-  end
-
-  @spec dice_roll() :: T.dice_roll()
-  defp dice_roll() do
-    :rand.uniform(6) + :rand.uniform(6)
-  end
-
-  @spec affected_tiles(Game.t(), T.dice_roll()) :: [T.tile()]
-  defp affected_tiles(game, roll) do
-    game.board.tokens
-    |> Stream.filter(fn {_tile, token} -> token == roll end)
-    |> Stream.reject(fn {tile, _token} -> tile == game.robber_tile end)
-    |> Stream.map(fn {tile, _token} -> tile end)
-  end
-
-  @spec tile_resource_production(Game.t(), T.tile()) :: [{T.color(), T.resource(), integer()}]
-  defp tile_resource_production(game, tile) do
-    resource = T.terrain_resource(game.board.terrains[tile])
-    Graphs.tile_corners[tile]
-    |> Enum.flat_map(fn corner ->
-      building = game.buildings[corner]
-      case building do
-        nil -> []
-        {kind, player} -> [{player, resource, T.building_weight(kind)}]
-      end
-    end)
-  end
-
-  @spec distribute_resources(Game.t(), [{T.color(), T.resource(), integer()}]) :: Game.t()
-  defp distribute_resources(game, resources) do
-    {:ok, game} =
-      resduce(game, resources, fn {player, resource, amount}, game ->
-        update_player_resource(game, player, resource, amount)
+  @spec victory_points(Game.t(), T.color()) :: integer()
+  defp victory_points(game, player) do
+    buildings_vp =
+      game.buildings
+      |> Enum.filter(fn
+        {_corner, nil} -> false
+        {_corner, {_kind, color}} -> color == player
       end)
-    game
+      |> Enum.map(fn {_corner, {kind, _color}} -> T.building_weight(kind) end)
+      |> Enum.sum()
+
+    development_cards_vp =
+      game.players[player].development_cards
+      |> Enum.map(&T.card_victory_points/1)
+      |> Enum.sum()
+
+    buildings_vp +
+    development_cards_vp +
+    (if game.largest_army_holder == player, do: 2, else: 0) +
+    (if game.longest_road_holder == player, do: 2, else: 0)
   end
 
   @spec finish_turn(Game.t()) :: Game.t()
@@ -404,26 +419,30 @@ defmodule Catan.Model.Game do
     finish_turn(game)
   end
 
-  @spec victory_points(Game.t(), T.color()) :: integer()
-  defp victory_points(game, player) do
-    buildings_vp =
-      game.buildings
-      |> Enum.filter(fn
-        {_corner, nil} -> false
-        {_corner, {_kind, color}} -> color == player
-      end)
-      |> Enum.map(fn {_corner, {kind, _color}} -> T.building_weight(kind) end)
-      |> Enum.sum()
+  @spec dice_roll() :: T.dice_roll()
+  defp dice_roll() do
+    :rand.uniform(6) + :rand.uniform(6)
+  end
 
-    development_cards_vp =
-      game.players[player].development_cards
-      |> Enum.map(&T.card_victory_points/1)
-      |> Enum.sum()
+  @spec affected_tiles(Game.t(), T.dice_roll()) :: [T.tile()]
+  defp affected_tiles(game, roll) do
+    game.board.tokens
+    |> Enum.filter(fn {_tile, token} -> token == roll end)
+    |> Enum.reject(fn {tile, _token} -> tile == game.robber_tile end)
+    |> Enum.map(fn {tile, _token} -> tile end)
+  end
 
-    buildings_vp +
-    development_cards_vp +
-    (if game.largest_army_holder == player, do: 2, else: 0) +
-    (if game.longest_road_holder == player, do: 2, else: 0)
+  @spec tile_resource_production(Game.t(), T.tile()) :: [{T.color(), T.resource(), integer()}]
+  defp tile_resource_production(game, tile) do
+    resource = T.terrain_resource(game.board.terrains[tile])
+    Graphs.tile_corners[tile]
+    |> Enum.flat_map(fn corner ->
+      building = game.buildings[corner]
+      case building do
+        nil -> []
+        {kind, player} -> [{player, resource, T.building_weight(kind)}]
+      end
+    end)
   end
 
   @spec ongoing_start_turn(Game.t(), [T.color()]) :: Game.t()
@@ -709,15 +728,6 @@ defmodule Catan.Model.Game do
     end
   end
 
-  @spec place_road_adjacent(Game.t(), T.color(), T.side()) :: T.result(Game.t())
-  defp place_road_adjacent(game, player, side) do
-    if player not in side_adjacent_roads(game, side) do
-      {:error, :no_adjacent_roads}
-    else
-      place_road_arbitrary(game, player, side)
-    end
-  end
-
   @spec build_road(Game.t(), T.side()) :: T.result(Game.t())
   def build_road(
     %Game{state: {:ongoing, :building, [player|_]}} = game,
@@ -725,15 +735,6 @@ defmodule Catan.Model.Game do
   ) do
     with {:ok, game} = place_road_adjacent(game, player, side) do
       update_player_resources(game, player, T.cost(:road))
-    end
-  end
-
-  @spec place_settlement_adjacent(Game.t(), T.color(), T.corner()) :: T.result(Game.t())
-  defp place_settlement_adjacent(game, player, corner) do
-    if player not in corner_adjacent_roads(game, corner) do
-      {:error, :no_adjacent_roads}
-    else
-      place_settlement_arbitrary(game, player, corner)
     end
   end
 
