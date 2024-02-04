@@ -3,6 +3,8 @@ defmodule Catan.Model.T do
   Paths, corners and tiles are numbered in reading order (top-to-bottom, left-to-right).
   """
 
+  alias Catan.Model.Board
+
   @type result(type) :: {:ok, result :: type} | {:error, reason :: any()}
 
   @type side()   :: 1..72
@@ -40,6 +42,11 @@ defmodule Catan.Model.T do
     | {:won_by, winner :: color()}
 
   @type buyable() :: :development_card | :road | :settlement | :city
+
+  @type game_spec() :: %{
+    players: [T.color()],
+    board: :beginner | :random | Board.t()
+  }
 
   @spec tiles() :: T.tile()
   def tiles(), do: 1..19

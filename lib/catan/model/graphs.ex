@@ -1,5 +1,4 @@
 defmodule Catan.Model.Graphs do
-  alias Catan.Model.Graphs
   alias Catan.Model.T
 
   @spec corner_sides() :: %{T.corner() => [{T.side(), T.corner()}]}
@@ -233,14 +232,5 @@ defmodule Catan.Model.Graphs do
       71 => [54, 50],
       72 => [54, 51],
     }
-  end
-
-  def make_side_corners() do
-    for {corner, edges} <- Graphs.corner_sides, {side, _} <- edges do
-      {corner, side}
-    end
-    |> Enum.uniq()
-    |> Enum.group_by(&elem(&1, 1), &elem(&1, 0))
-    |> Map.new()
   end
 end

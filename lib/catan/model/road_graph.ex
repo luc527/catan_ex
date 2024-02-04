@@ -62,7 +62,7 @@ defmodule Catan.Model.RoadGraph do
       visited = MapSet.put(visited, side)
       graph[side]
       |> MapSet.difference(visited)
-      |> MapSet.difference(ignore)  # To avoid backtracking and going into another side
+      |> MapSet.difference(ignore)  # To avoid backtracking
       |> Enum.map(&paths_from(graph, &1, visited, graph[side]))
       |> case do
         [] ->
