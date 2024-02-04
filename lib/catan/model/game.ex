@@ -191,6 +191,10 @@ defmodule Catan.Model.Game do
     )
   end
 
+  @spec current_player(Game.t()) :: T.color()
+  def current_player(%{player_order: [player | _]}) do
+    player
+  end
 
   @spec initial_game([T.color()], Board.t()) :: T.result(Game.t())
   def initial_game([_|_] = player_order, %Board{} = board) do
@@ -399,10 +403,6 @@ defmodule Catan.Model.Game do
       end)
     game = %{game | new_development_cards: []}
 
-    # FIXME: no reason to put victory points in the game struct
-    # because it **can't** be sent to the players, since it could
-    # reveal the existence of a hidden victory point development card!
-
     # Update victory points
 
     game =
@@ -460,7 +460,7 @@ defmodule Catan.Model.Game do
       7 ->
         stolen_players =
           game.players
-          |> Enum.filter(fn {_, player} -> Player.number_of_resource_cards(player) > 7 end)
+          |> Enum.filter(fn {_, player} -> Player.card_count(player.resources) > 7 end)
           |> Enum.map(fn {color, _} -> color end)
         next_stage =
           if stolen_players == [] do
@@ -659,7 +659,7 @@ defmodule Catan.Model.Game do
       |> Enum.map(fn {_, amount} -> amount end)
       |> Enum.sum()
     num_want_cards =
-      div(Player.number_of_resource_cards(game.players[player]), 2)
+      div(Player.card_count(game.players[player].resources), 2)
 
     cond do
       player not in players_remaining ->

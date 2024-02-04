@@ -1,11 +1,12 @@
 defmodule Catan.Room do
+  alias Catan.Model.Player
   alias Catan.Model.Game
   alias Catan.Model.Board
   alias Catan.Model.T
   alias Catan.Room
   use GenServer
 
-  @type client() :: {color :: T.color(), pids :: [pid()]}
+  @type client() :: {color :: T.color(), pids :: MapSet.t(pid())}
 
   defstruct [
     :game,
@@ -21,6 +22,10 @@ defmodule Catan.Room do
 
   def start_link({num_players, uuid}) do
     GenServer.start_link(__MODULE__, num_players, name: via_tuple(uuid))
+  end
+
+  def join(room, client_id) do
+    GenServer.call(room, {:join, client_id})
   end
 
   @impl true
@@ -43,50 +48,106 @@ defmodule Catan.Room do
   end
 
   @impl true
-  def handle_call({:join, client_id}, {pid, _}, state) do
-    case state.clients[client_id] do
-      {color, pids} ->
+  def handle_call({:join, client_id}, {pid, _}, room) do
+    case add_client(room, client_id, pid) do
+      {:error, reason} ->
+        {:reply, {:error, reason}, room}
+      {:ok, room} ->
         Process.monitor(pid)
-        state = put_in(state.clients[client_id], {color, Enum.uniq([pid|pids])})
-        {:reply, :ok, state}
-      nil ->
-        case remaining_colors(state) do
-          [color|_] ->
-            Process.monitor(pid)
-            state = put_in(state.clients[client_id], {color, [pid]})
-            {:reply, :ok, state}
-          [] ->
-            {:reply, {:error, :room_full}, state}
-        end
+        broadcast_online_players(room.clients)
+        {color, _} = room.clients[client_id]
+        Catan.Client.notify(pid, game_message_for(room.game, color))
+        {:reply, :ok, room}
     end
   end
 
   # TODO remove later
   @impl true
-  def handle_call(:show, _from, state) do
-    {:reply, state, state}
+  def handle_call(:show, _from, room) do
+    {:reply, room, room}
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, dead_pid, _reason}, state) do
-    state =
-      update_in(state.clients, &Map.new(&1, fn {client_id, {color, pids}} ->
-        {client_id, {color, List.delete(pids, dead_pid)}}
+  def handle_info({:DOWN, _ref, :process, dead_pid, _reason}, room) do
+    room =
+      update_in(room.clients, &Map.new(&1, fn {client_id, {color, pids}} ->
+        {client_id, {color, MapSet.delete(pids, dead_pid)}}
       end))
-    {:noreply, state}
+    broadcast_online_players(room.clients)
+    {:noreply, room}
   end
 
-  defp remaining_colors(state) do
-    game_colors = state.game.player_order
-    used_colors = state.clients |> Map.values() |> Enum.map(fn {color, _} -> color end)
+  defp add_client(room, client_id, pid) do
+    case room.clients[client_id] do
+      {color, pids} ->
+        client = {color, MapSet.put(pids, pid)}
+        {:ok, put_in(room.clients[client_id], client)}
+      nil ->
+        case remaining_colors(room) do
+          [color | _] ->
+            client = {color, MapSet.new() |> MapSet.put(pid)}
+            {:ok, put_in(room.clients[client_id], client)}
+          [] ->
+            {:error, :room_full}
+        end
+    end
+  end
+
+  defp remaining_colors(room) do
+    game_colors = room.game.player_order
+    used_colors = room.clients |> Map.values() |> Enum.map(fn {color, _} -> color end)
     Enum.reject(game_colors, &(&1 in used_colors))
   end
 
-  def test_client(room_pid, id) do
-    spawn(fn ->
-      IO.puts "#{id} joined, #{inspect GenServer.call(room_pid, {:join, id})}"
-      Process.sleep(8000)
-      IO.puts "#{id} exited"
-    end)
+  defp game_message_for(game0, dest_color) do
+    take_keys = [
+      :board,
+      :player_order,
+      :buildings,
+      :roads,
+      :state,
+      :dice_roll,
+      :robber_tile,
+      :largest_army_holder,
+      :longest_road_holder,
+    ]
+    take_keys = case Game.current_player(game0) do
+      ^dest_color -> [:new_development_cards | take_keys]
+      _ -> take_keys
+    end
+    game = Map.take(game0, take_keys)
+    game = Map.put(game, :num_development_cards, length(game0.development_card_stack))
+    game = Map.put(game, :players, Map.new(game0.players, fn {color, player} ->
+      if color == dest_color do
+        {color, player}
+      else
+        {color, %{
+          num_resources: Player.card_count(player.resources),
+          num_development_cards: Player.card_count(player.development_cards),
+          pieces: player.pieces,
+          used_knight_cards: player.used_knight_cards,
+        }}
+      end
+    end))
+    %{game: game}
   end
+
+  defp online_players_message(clients) do
+    %{players:
+      Map.new(clients, fn {client_id, {color, pids}} ->
+        {color, %{
+          id: client_id,
+          online: pids != [],
+        }}
+      end)
+    }
+  end
+
+  defp broadcast_online_players(clients) do
+    message = online_players_message(clients)
+    for {_, {_, pids}} <- clients, pid <- pids do
+      Catan.Client.notify(pid, message)
+    end
+  end
+
 end
