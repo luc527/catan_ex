@@ -28,6 +28,68 @@ defmodule Catan.Room do
     GenServer.call(room, {:join, client_id})
   end
 
+  # ACTIONS
+  # Since I couldn't figure out how to do this with Elixir macros,
+  # I did it manually with Vim, first writing lines like these by hand:
+  #   place_starting_pieces settlement_rocer, road_side
+  # then doing search-and-replace with regex capture groups:
+  #   %s/(\w+) (.*?)/def \1(room, \2) etc
+  # :^)
+
+  # TODO test
+
+  def place_starting_pieces(room, settlement_corner, road_side) do
+    GenServer.call(room, {:play, [:place_starting_pieces, settlement_corner, road_side]})
+  end
+
+  def trade_with_bank(room, player_resource, amount, bank_resource) do
+    GenServer.call(room, {:play, [:trade_with_bank, player_resource, amount, bank_resource]})
+  end
+
+  def trade_with_player(room, other_player, resources_given, resources_received) do
+    GenServer.call(room, {:play, [:trade_with_player, other_player, resources_given, resources_received]})
+  end
+
+  def finish_trading(room) do
+    GenServer.call(room, {:play, [:finish_trading]})
+  end
+
+  def choose_stolen_cards(room, player, cards) do
+    GenServer.call(room, {:play, [:choose_stolen_cards, player, cards]})
+  end
+
+  def move_robber(room, tile, player_to_steal) do
+    GenServer.call(room, {:play, [:move_robber, tile, player_to_steal]})
+  end
+
+  def build_road(room, side) do
+    GenServer.call(room, {:play, [:build_road, side]})
+  end
+
+  def build_city(room, side) do
+    GenServer.call(room, {:play, [:build_city, side]})
+  end
+
+  def buy_development_card(room) do
+    GenServer.call(room, {:play, [:buy_development_card]})
+  end
+
+  def use_knight_card(room, robber_tile, player_to_steal) do
+    GenServer.call(room, {:play, [:use_knight_card, robber_tile, player_to_steal]})
+  end
+
+  def use_monopoly_card(room, resource) do
+    GenServer.call(room, {:play, [:use_monopoly_card, resource]})
+  end
+
+  def use_road_building_card(room, side1, side2) do
+    GenServer.call(room, {:play, [:use_road_building_card, side1, side2]})
+  end
+
+  def use_year_of_plenty_card(room, resource1, resource2) do
+    GenServer.call(room, {:play, [:use_year_of_plenty_card, resource1, resource2]})
+  end
+
   @impl true
   def init(num_players) do
     player_order =
@@ -58,6 +120,26 @@ defmodule Catan.Room do
         {color, _} = room.clients[client_id]
         Catan.Client.notify(pid, game_message_for(room.game, color))
         {:reply, :ok, room}
+    end
+  end
+
+  @impl true
+  def handle_call({:play, [name | args]}, {pid, _}, room) do
+    current_color = Game.current_player_color(room.game)
+    {_, {player_color, _}} = Enum.find(room.clients, fn {_, {_, pids}} -> pid in pids end)
+
+    with ^current_color <- player_color,
+        {:ok, game} <- apply(Game, name, [room.game | args])
+    do
+      broadcast_game(room.clients, game)
+      {:reply, :ok, put_in(room.game, game)}
+    else
+      {:error, reason} ->
+        {:reply, {:error, reason}, room}
+      nil ->
+        {:reply, {:error, :unauthorized}, room}
+      _color ->
+        {:reply, {:error, :not_your_turn}, room}
     end
   end
 
@@ -111,7 +193,7 @@ defmodule Catan.Room do
       :largest_army_holder,
       :longest_road_holder,
     ]
-    take_keys = case Game.current_player(game0) do
+    take_keys = case Game.current_player_color(game0) do
       ^dest_color -> [:new_development_cards | take_keys]
       _ -> take_keys
     end
@@ -147,6 +229,15 @@ defmodule Catan.Room do
     message = online_players_message(clients)
     for {_, {_, pids}} <- clients, pid <- pids do
       Catan.Client.notify(pid, message)
+    end
+  end
+
+  defp broadcast_game(clients, game) do
+    for {_, {color, pids}} <- clients do
+      message = game_message_for(game, color)
+      for pid <- pids do
+        Catan.Client.notify(pid, message)
+      end
     end
   end
 

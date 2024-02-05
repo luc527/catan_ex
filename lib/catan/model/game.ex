@@ -191,8 +191,8 @@ defmodule Catan.Model.Game do
     )
   end
 
-  @spec current_player(Game.t()) :: T.color()
-  def current_player(%{player_order: [player | _]}) do
+  @spec current_player_color(Game.t()) :: T.color()
+  def current_player_color(%{player_order: [player | _]}) do
     player
   end
 
@@ -526,6 +526,8 @@ defmodule Catan.Model.Game do
     end
   end
 
+  def place_starting_pieces(_, _, _), do: {:error, :unavailable_action}
+
   @spec _trade_with_bank(Game.t(), T.resource(), integer(), T.resource()) :: T.result(Game.t())
   defp _trade_with_bank(
     %Game{state: {:ongoing, :trading, [player|_]}} = game,
@@ -603,7 +605,7 @@ defmodule Catan.Model.Game do
 
   # TODO: do the same for every other state transition function?
   def trade_with_bank(_, _, _, _) do
-    {:error, :invalid_state}
+    {:error, :unavailable_action}
   end
 
   @spec negate_resources([{T.resource(), integer()}]) :: [{T.resource(), integer()}]
@@ -643,11 +645,13 @@ defmodule Catan.Model.Game do
         end
     end
   end
+  def trade_with_player(_, _, _, _), do: {:error, :unavailable_action}
 
   @spec finish_trading(Game.t()) :: Game.t()
   def finish_trading(%Game{state: {:ongoing, :trading, queue}} = game) do
     %{game | state: {:ongoing, :building, queue}}
   end
+  def finish_trading(_), do: {:error, :unavailable_action}
 
   @spec choose_stolen_cards(Game.t(), T.color(), [{T.resource(), integer()}]) :: T.result(Game.t())
   def choose_stolen_cards(
@@ -681,6 +685,7 @@ defmodule Catan.Model.Game do
         end
     end
   end
+  def choose_stolen_cards(_, _, _), do: {:error, :unavailable_action}
 
   @spec move_robber(Game.t(), T.tile(), T.color() | nil) :: T.result(Game.t())
   def move_robber(
@@ -691,6 +696,7 @@ defmodule Catan.Model.Game do
       {:ok, %{game | state: {:ongoing, :trading, queue}}}
     end
   end
+  def move_robber(_, _, _), do: {:error, :unavailable_action}
 
   @spec _move_robber(Game.t(), T.tile(), T.color() | nil) :: T.result(Game.t())
   defp _move_robber(%Game{state: {:ongoing, _, [player|_]}}=game, tile, player_to_steal) do
@@ -741,6 +747,7 @@ defmodule Catan.Model.Game do
       update_player_resources(game, player, T.cost(:road))
     end
   end
+  def build_road(_, _), do: {:error, :unavailable_action}
 
   @spec build_settlement(Game.t(), T.corner()) :: T.result(Game.t())
   def build_settlement(
@@ -751,6 +758,7 @@ defmodule Catan.Model.Game do
       update_player_resources(game, player, T.cost(:settlement))
     end
   end
+  def build_settlement(_, _), do: {:error, :unavailable_action}
 
   @spec build_city(Game.t(), T.corner()) :: T.result(Game.t())
   def build_city(
@@ -775,6 +783,7 @@ defmodule Catan.Model.Game do
         end
     end
   end
+  def build_city(_, _), do: {:error, :unavailable_action}
 
   @spec pop_development_card(Game.t()) :: T.result({T.development_card(), T.game()})
   defp pop_development_card(game) do
@@ -796,6 +805,7 @@ defmodule Catan.Model.Game do
       {:ok, update_in(game.new_development_cards, &[card | &1])}
     end
   end
+  def buy_development_card(_), do: {:error, :unavailable_action}
 
   defguard allows_development_card(stage)
   when stage in [:trading, :building, :moving_robber]
@@ -815,6 +825,7 @@ defmodule Catan.Model.Game do
       _move_robber(game, robber_tile, player_to_steal)
     end
   end
+  def use_knight_card(_, _, _), do: {:error, :unavailable_action}
 
   @spec use_monopoly_card(Game.t(), T.resource()) :: T.result(Game.t())
   def use_monopoly_card(
@@ -833,6 +844,7 @@ defmodule Catan.Model.Game do
       {:ok, put_in(game.players[thief].resources[resource], total)}
     end
   end
+  def use_monopoly_card(_, _), do: {:error, :unavailable_action}
 
   @spec use_road_building_card(Game.t(), T.side(), T.side()) :: T.result(Game.t())
   def use_road_building_card(
@@ -859,6 +871,7 @@ defmodule Catan.Model.Game do
       end
     end
   end
+  def use_road_building_card(_, _, _), do: {:error, :unavailable_action}
 
   @spec use_year_of_plenty_card(Game.t(), T.resource(), T.resource()) :: T.result(Game.t())
   def use_year_of_plenty_card(
@@ -869,5 +882,6 @@ defmodule Catan.Model.Game do
       update_player_resources(game, player, [{resource1, 1}, {resource2, 1}])
     end
   end
+  def use_year_of_plenty_card(_, _, _), do: {:error, :unavailable_action}
 
 end
