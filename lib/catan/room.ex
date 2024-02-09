@@ -6,12 +6,18 @@ defmodule Catan.Room do
   alias Catan.Room
   use GenServer
 
-  @type client() :: {color :: T.color(), pids :: MapSet.t(pid())}
+  @type client_id() :: any()  # TODO any for testing, later change to int?
+  @type client() :: %{color: T.color(), pids: MapSet.t(pid())}
 
   defstruct [
     :game,
     :clients,
   ]
+
+  @type t() :: %{
+    game: Game.t(),
+    clients: %{client_id() => [client()]},
+  }
 
   # TODO should preserve state when restarted
   # TODO when restarted should re-notify the clients (maybe it crashed due to some client's action)
@@ -38,56 +44,56 @@ defmodule Catan.Room do
 
   # TODO test
 
-  def place_starting_pieces(room, settlement_corner, road_side) do
-    GenServer.call(room, {:play, [:place_starting_pieces, settlement_corner, road_side]})
+  def place_starting_pieces(room, client_id, settlement_corner, road_side) do
+    GenServer.call(room, {:play, client_id, [:place_starting_pieces, settlement_corner, road_side]})
   end
 
-  def trade_with_bank(room, player_resource, amount, bank_resource) do
-    GenServer.call(room, {:play, [:trade_with_bank, player_resource, amount, bank_resource]})
+  def trade_with_bank(room, client_id, player_resource, amount, bank_resource) do
+    GenServer.call(room, {:play, client_id, [:trade_with_bank, player_resource, amount, bank_resource]})
   end
 
-  def trade_with_player(room, other_player, resources_given, resources_received) do
-    GenServer.call(room, {:play, [:trade_with_player, other_player, resources_given, resources_received]})
+  def trade_with_player(room, client_id, other_player, resources_given, resources_received) do
+    GenServer.call(room, {:play, client_id, [:trade_with_player, other_player, resources_given, resources_received]})
   end
 
-  def finish_trading(room) do
-    GenServer.call(room, {:play, [:finish_trading]})
+  def finish_trading(room, client_id) do
+    GenServer.call(room, {:play, client_id, [:finish_trading]})
   end
 
-  def choose_stolen_cards(room, player, cards) do
-    GenServer.call(room, {:play, [:choose_stolen_cards, player, cards]})
+  def choose_stolen_cards(room, client_id, player, cards) do
+    GenServer.call(room, {:play, client_id, [:choose_stolen_cards, player, cards]})
   end
 
-  def move_robber(room, tile, player_to_steal) do
-    GenServer.call(room, {:play, [:move_robber, tile, player_to_steal]})
+  def move_robber(room, client_id, tile, player_to_steal) do
+    GenServer.call(room, {:play, client_id, [:move_robber, tile, player_to_steal]})
   end
 
-  def build_road(room, side) do
-    GenServer.call(room, {:play, [:build_road, side]})
+  def build_road(room, client_id, side) do
+    GenServer.call(room, {:play, client_id, [:build_road, side]})
   end
 
-  def build_city(room, side) do
-    GenServer.call(room, {:play, [:build_city, side]})
+  def build_city(room, client_id, side) do
+    GenServer.call(room, {:play, client_id, [:build_city, side]})
   end
 
-  def buy_development_card(room) do
-    GenServer.call(room, {:play, [:buy_development_card]})
+  def buy_development_card(room, client_id) do
+    GenServer.call(room, {:play, client_id, [:buy_development_card]})
   end
 
-  def use_knight_card(room, robber_tile, player_to_steal) do
-    GenServer.call(room, {:play, [:use_knight_card, robber_tile, player_to_steal]})
+  def use_knight_card(room, client_id, robber_tile, player_to_steal) do
+    GenServer.call(room, {:play, client_id, [:use_knight_card, robber_tile, player_to_steal]})
   end
 
-  def use_monopoly_card(room, resource) do
-    GenServer.call(room, {:play, [:use_monopoly_card, resource]})
+  def use_monopoly_card(room, client_id, resource) do
+    GenServer.call(room, {:play, client_id, [:use_monopoly_card, resource]})
   end
 
-  def use_road_building_card(room, side1, side2) do
-    GenServer.call(room, {:play, [:use_road_building_card, side1, side2]})
+  def use_road_building_card(room, client_id, side1, side2) do
+    GenServer.call(room, {:play, client_id, [:use_road_building_card, side1, side2]})
   end
 
-  def use_year_of_plenty_card(room, resource1, resource2) do
-    GenServer.call(room, {:play, [:use_year_of_plenty_card, resource1, resource2]})
+  def use_year_of_plenty_card(room, client_id, resource1, resource2) do
+    GenServer.call(room, {:play, client_id, [:use_year_of_plenty_card, resource1, resource2]})
   end
 
   @impl true
@@ -111,35 +117,28 @@ defmodule Catan.Room do
 
   @impl true
   def handle_call({:join, client_id}, {pid, _}, room) do
-    case add_client(room, client_id, pid) do
-      {:error, reason} ->
-        {:reply, {:error, reason}, room}
-      {:ok, room} ->
-        Process.monitor(pid)
-        broadcast_online_players(room.clients)
-        {color, _} = room.clients[client_id]
-        Catan.Client.notify(pid, game_message_for(room.game, color))
-        {:reply, :ok, room}
+    with {:ok, room} <- add_client(room, client_id, pid) do
+      Process.monitor(pid)
+      send(self(), :broadcast_players)
+      color = room.clients[client_id].color
+      Catan.Client.notify(pid, game_message_for(room.game, color))
+      {:reply, :ok, room}
+    else
+      error -> {:reply, error, room}
     end
   end
 
   @impl true
-  def handle_call({:play, [name | args]}, {pid, _}, room) do
-    current_color = Game.current_player_color(room.game)
-    {_, {player_color, _}} = Enum.find(room.clients, fn {_, {_, pids}} -> pid in pids end)
-
-    with ^current_color <- player_color,
-        {:ok, game} <- apply(Game, name, [room.game | args])
+  def handle_call({:play, client_id, [fun | args]}, {pid, _}, room) do
+    with :ok <- check_is_authorized(room.clients, client_id, pid),
+         color = room.clients[client_id].color,
+         :ok <- check_is_current_player(room.game, color),
+         {:ok, game} <- apply(Game, fun, [room.game | args])
     do
-      broadcast_game(room.clients, game)
+      send(self(), :broadcast_game)
       {:reply, :ok, put_in(room.game, game)}
     else
-      {:error, reason} ->
-        {:reply, {:error, reason}, room}
-      nil ->
-        {:reply, {:error, :unauthorized}, room}
-      _color ->
-        {:reply, {:error, :not_your_turn}, room}
+      error -> {:reply, error, room}
     end
   end
 
@@ -152,32 +151,61 @@ defmodule Catan.Room do
   @impl true
   def handle_info({:DOWN, _ref, :process, dead_pid, _reason}, room) do
     room =
-      update_in(room.clients, &Map.new(&1, fn {client_id, {color, pids}} ->
-        {client_id, {color, MapSet.delete(pids, dead_pid)}}
-      end))
+      update_in(room.clients, fn {client_id, client} ->
+        {client_id, update_in(client.pids, &MapSet.delete(&1, dead_pid))}
+      end)
     broadcast_online_players(room.clients)
     {:noreply, room}
   end
 
+  @impl true
+  def handle_info(:broadcast_game, room) do
+    broadcast_game(room.clients, room.game)
+    {:noreply, room}
+  end
+
+  @impl true
+  def handle_info(:broadcast_players, room) do
+    broadcast_online_players(room.clients)
+    {:noreply, room}
+  end
+
+  defp check_is_current_player(game, color) do
+    if color == Game.current_player_color(game) do
+      :ok
+    else
+      {:error, :not_your_turn}
+    end
+  end
+
+  defp check_is_authorized(clients, client_id_attempt, pid) do
+    clients
+    |> Enum.any?(fn {client_id, client} -> client_id_attempt == client_id and pid in client.pids end)
+    |> case do
+      true -> :ok
+      false -> {:error, :unauthorized}
+    end
+  end
+
   defp add_client(room, client_id, pid) do
     case room.clients[client_id] do
-      {color, pids} ->
-        client = {color, MapSet.put(pids, pid)}
-        {:ok, put_in(room.clients[client_id], client)}
       nil ->
         case remaining_colors(room) do
           [color | _] ->
-            client = {color, MapSet.new() |> MapSet.put(pid)}
+            client = %{color: color, pids: MapSet.new([pid])}
             {:ok, put_in(room.clients[client_id], client)}
           [] ->
             {:error, :room_full}
         end
+      client ->
+        client = update_in(client.pids, &MapSet.put(&1, pid))
+        {:ok, put_in(room.clients[client_id], client)}
     end
   end
 
   defp remaining_colors(room) do
     game_colors = room.game.player_order
-    used_colors = room.clients |> Map.values() |> Enum.map(fn {color, _} -> color end)
+    used_colors = room.clients |> Map.values() |> Enum.map(fn client -> client.color end)
     Enum.reject(game_colors, &(&1 in used_colors))
   end
 
@@ -214,28 +242,25 @@ defmodule Catan.Room do
     %{game: game}
   end
 
-  defp online_players_message(clients) do
-    %{players:
-      Map.new(clients, fn {client_id, {color, pids}} ->
-        {color, %{
-          id: client_id,
-          online: pids != [],
-        }}
-      end)
-    }
-  end
-
   defp broadcast_online_players(clients) do
-    message = online_players_message(clients)
-    for {_, {_, pids}} <- clients, pid <- pids do
+    message = %{
+      players:
+        Map.new(clients, fn {client_id, client} ->
+          {client.color, %{
+            id: client_id,
+            online: client.pids != [],
+          }}
+        end)
+    }
+    for {_, client} <- clients, pid <- client.pids do
       Catan.Client.notify(pid, message)
     end
   end
 
   defp broadcast_game(clients, game) do
-    for {_, {color, pids}} <- clients do
-      message = game_message_for(game, color)
-      for pid <- pids do
+    for {_, client} <- clients do
+      message = game_message_for(game, client.color)
+      for pid <- client.pids do
         Catan.Client.notify(pid, message)
       end
     end

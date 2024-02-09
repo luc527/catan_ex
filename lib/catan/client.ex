@@ -22,4 +22,13 @@ defmodule Catan.Client do
         loop(client_id)
     end
   end
+
+  # TODO for iex testing, remove later
+  def recv() do
+    receive do
+      msg -> msg
+    after
+      1000 -> nil
+    end
+  end
 end

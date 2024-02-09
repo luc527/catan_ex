@@ -192,8 +192,12 @@ defmodule Catan.Model.Game do
   end
 
   @spec current_player_color(Game.t()) :: T.color()
-  def current_player_color(%{player_order: [player | _]}) do
-    player
+  def current_player_color(game) do
+    case game.state do
+      {:foundation, _, [player|_]} -> player
+      {:ongoing, _, [player|_]} -> player
+      _ -> nil
+    end
   end
 
   @spec initial_game([T.color()], Board.t()) :: T.result(Game.t())
@@ -603,7 +607,6 @@ defmodule Catan.Model.Game do
     {:error, :invalid_amount}
   end
 
-  # TODO: do the same for every other state transition function?
   def trade_with_bank(_, _, _, _) do
     {:error, :unavailable_action}
   end
