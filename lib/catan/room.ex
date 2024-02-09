@@ -119,7 +119,7 @@ defmodule Catan.Room do
   def handle_call({:join, client_id}, {pid, _}, room) do
     with {:ok, room} <- add_client(room, client_id, pid) do
       Process.monitor(pid)
-      send(self(), :broadcast_players)
+      broadcast_online_players(room.clients)
       color = room.clients[client_id].color
       Catan.Client.notify(pid, game_message_for(room.game, color))
       {:reply, :ok, room}
@@ -135,7 +135,7 @@ defmodule Catan.Room do
          :ok <- check_is_current_player(room.game, color),
          {:ok, game} <- apply(Game, fun, [room.game | args])
     do
-      send(self(), :broadcast_game)
+      broadcast_game(room.clients, room.game)
       {:reply, :ok, put_in(room.game, game)}
     else
       error -> {:reply, error, room}
@@ -154,18 +154,6 @@ defmodule Catan.Room do
       update_in(room.clients, fn {client_id, client} ->
         {client_id, update_in(client.pids, &MapSet.delete(&1, dead_pid))}
       end)
-    broadcast_online_players(room.clients)
-    {:noreply, room}
-  end
-
-  @impl true
-  def handle_info(:broadcast_game, room) do
-    broadcast_game(room.clients, room.game)
-    {:noreply, room}
-  end
-
-  @impl true
-  def handle_info(:broadcast_players, room) do
     broadcast_online_players(room.clients)
     {:noreply, room}
   end
